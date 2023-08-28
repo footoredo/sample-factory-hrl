@@ -457,7 +457,7 @@ class Runner(EventLoopObject, Configurable):
                 # add more stats if needed (commented by default for efficiency)
                 # stats=self.stats,
                 # avg_stats=self.avg_stats,
-                # policy_avg_stats=self.policy_avg_stats,
+                policy_avg_stats={ key: np.mean(value[policy_id]) for key, value in self.policy_avg_stats.items() },
             )
 
         self.update_training_info.emit(training_info)
