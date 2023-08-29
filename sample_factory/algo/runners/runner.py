@@ -283,14 +283,23 @@ class Runner(EventLoopObject, Configurable):
                     deque(maxlen=runner.cfg.stats_avg) for _ in range(runner.cfg.num_policies)
                 ]
 
-            if isinstance(value, np.ndarray) and value.ndim > 0:
-                if len(value) > runner.policy_avg_stats[key][policy_id].maxlen:
-                    # increase maxlen to make sure we never ignore any stats from the environments
-                    runner.policy_avg_stats[key][policy_id] = deque(maxlen=len(value))
-
-                runner.policy_avg_stats[key][policy_id].extend(value)
+            if key in ("reward", "true_objective"):
+                if value.ndim == 1:
+                    values = [value]
+                else:
+                    values = [value[i] for i in range(value.shape[0])]
+                if len(values) > runner.policy_avg_stats[key][policy_id].maxlen:
+                    runner.policy_avg_stats[key][policy_id] = deque(maxlen=len(values))
+                runner.policy_avg_stats[key][policy_id].extend(values)
             else:
-                runner.policy_avg_stats[key][policy_id].append(value)
+                if isinstance(value, np.ndarray) and value.ndim > 0:
+                    if len(value) > runner.policy_avg_stats[key][policy_id].maxlen:
+                        # increase maxlen to make sure we never ignore any stats from the environments
+                        runner.policy_avg_stats[key][policy_id] = deque(maxlen=len(value))
+
+                    runner.policy_avg_stats[key][policy_id].extend(value)
+                else:
+                    runner.policy_avg_stats[key][policy_id].append(value)
 
     @staticmethod
     def _train_stats_handler(runner: Runner, msg: Dict, policy_id: PolicyID) -> None:
@@ -358,7 +367,7 @@ class Runner(EventLoopObject, Configurable):
             for policy_id in range(self.cfg.num_policies):
                 reward_stats = self.policy_avg_stats["reward"][policy_id]
                 if len(reward_stats) > 0:
-                    policy_reward_stats.append((policy_id, f"{np.mean(reward_stats):.3f}"))
+                    policy_reward_stats.append((policy_id, f"{np.mean(reward_stats, 0)}"))
             log.debug("Avg episode reward: %r", policy_reward_stats)
 
     def _update_stats_and_print_report(self):
@@ -429,12 +438,21 @@ class Runner(EventLoopObject, Configurable):
                         min_tag = f"policy_stats/avg_{key}_min"
                         max_tag = f"policy_stats/avg_{key}_max"
 
-                    writer.add_scalar(avg_tag, float(stat_value), env_steps)
+                    if key in ("reward", "true_objective"):
+                        for i in range(self.env_info.num_rewards):
+                            writer.add_scalar(avg_tag + (f"_{i}" if i > 0 else ""), float(np.mean([s[i] for s in stat[policy_id]])), env_steps)
+                    else:
+                        writer.add_scalar(avg_tag, float(stat_value), env_steps)
 
                     # for key stats report min/max as well
-                    if key in ("reward", "true_objective", "len"):
+                    if key in ("len"):
                         writer.add_scalar(min_tag, float(min(stat[policy_id])), env_steps)
                         writer.add_scalar(max_tag, float(max(stat[policy_id])), env_steps)
+                    if key in ("reward", "true_objective"):
+                        for i in range(self.env_info.num_rewards):
+                            # print(stat[policy_id])
+                            writer.add_scalar(min_tag + (f"_{i}" if i > 0 else ""), float(min([s[i] for s in stat[policy_id]])), env_steps)
+                            writer.add_scalar(max_tag + (f"_{i}" if i > 0 else ""), float(max([s[i] for s in stat[policy_id]])), env_steps)
 
             self._observers_call(AlgoObserver.extra_summaries, self, policy_id, writer, env_steps)
 

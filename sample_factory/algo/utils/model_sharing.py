@@ -104,8 +104,8 @@ class ParameterClientAsync(ParameterClient):
         assert self.latest_policy_version >= 0, "Trying to access actor critic before it is initialized"
         return self._actor_critic
 
-    def _init_local_copy(self, device, cfg, obs_space, action_space):
-        self._actor_critic = create_actor_critic(cfg, obs_space, action_space)
+    def _init_local_copy(self, device, cfg, obs_space, action_space, num_rewards):
+        self._actor_critic = create_actor_critic(cfg, obs_space, action_space, num_rewards)
         self._actor_critic.model_to_device(device)
 
         for p in self._actor_critic.parameters():
@@ -115,7 +115,7 @@ class ParameterClientAsync(ParameterClient):
     def on_weights_initialized(self, state_dict, device: torch.device, policy_version: int) -> None:
         super().on_weights_initialized(state_dict, device, policy_version)
 
-        self._init_local_copy(device, self.cfg, self.env_info.obs_space, self.env_info.action_space)
+        self._init_local_copy(device, self.cfg, self.env_info.obs_space, self.env_info.action_space, self.env_info.num_rewards)
 
         with self._policy_lock:
             if state_dict is None:

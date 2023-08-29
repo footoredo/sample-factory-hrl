@@ -112,7 +112,7 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
         # reset call ruins the demo recording for VizDoom
         env.unwrapped.reset_on_init = False
 
-    actor_critic = create_actor_critic(cfg, env.observation_space, env.action_space)
+    actor_critic = create_actor_critic(cfg, env.observation_space, env.action_space, env.num_rewards)
     actor_critic.eval()
 
     device = torch.device("cpu" if cfg.device == "cpu" else "cuda")

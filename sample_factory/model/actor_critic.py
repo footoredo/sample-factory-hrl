@@ -19,10 +19,11 @@ from sample_factory.utils.typing import ActionSpace, Config, ObsSpace
 
 
 class ActorCritic(nn.Module, Configurable):
-    def __init__(self, obs_space: ObsSpace, action_space: ActionSpace, cfg: Config):
+    def __init__(self, obs_space: ObsSpace, action_space: ActionSpace, num_rewards: int, cfg: Config):
         nn.Module.__init__(self)
         Configurable.__init__(self, cfg)
         self.action_space = action_space
+        self.num_rewards = num_rewards
         self.encoders = []
 
         # we make normalizers a part of the model, so we can use the same infrastructure
@@ -31,7 +32,7 @@ class ActorCritic(nn.Module, Configurable):
 
         self.returns_normalizer: Optional[RunningMeanStdInPlace] = None
         if cfg.normalize_returns:
-            returns_shape = (1,)  # it's actually a single scalar but we use 1D shape for the normalizer
+            returns_shape = (num_rewards,)  # it's actually a single scalar but we use 1D shape for the normalizer
             self.returns_normalizer = RunningMeanStdInPlace(returns_shape)
             # comment this out for debugging (i.e. to be able to step through normalizer code)
             self.returns_normalizer = torch.jit.script(self.returns_normalizer)
@@ -133,9 +134,10 @@ class ActorCriticSharedWeights(ActorCritic):
         model_factory,
         obs_space: ObsSpace,
         action_space: ActionSpace,
+        num_rewards: int,
         cfg: Config,
     ):
-        super().__init__(obs_space, action_space, cfg)
+        super().__init__(obs_space, action_space, num_rewards, cfg)
 
         # in case of shared weights we're using only a single encoder and a single core
         self.encoder = model_factory.make_model_encoder_func(cfg, obs_space)
@@ -146,7 +148,7 @@ class ActorCriticSharedWeights(ActorCritic):
         self.decoder = model_factory.make_model_decoder_func(cfg, self.core.get_out_size())
         decoder_out_size: int = self.decoder.get_out_size()
 
-        self.critic_linear = nn.Linear(decoder_out_size, 1)
+        self.critic_linear = nn.Linear(decoder_out_size, num_rewards)
         self.action_parameterization = self.get_action_parameterization(decoder_out_size)
 
         self.apply(self.initialize_weights)
@@ -161,7 +163,7 @@ class ActorCriticSharedWeights(ActorCritic):
 
     def forward_tail(self, core_output, values_only: bool, sample_actions: bool) -> TensorDict:
         decoder_output = self.decoder(core_output)
-        values = self.critic_linear(decoder_output).squeeze()
+        values = self.critic_linear(decoder_output)
 
         result = TensorDict(values=values)
         if values_only:
@@ -189,9 +191,10 @@ class ActorCriticSeparateWeights(ActorCritic):
         model_factory,
         obs_space: ObsSpace,
         action_space: ActionSpace,
+        num_rewards: int,
         cfg: Config,
     ):
-        super().__init__(obs_space, action_space, cfg)
+        super().__init__(obs_space, action_space, num_rewards, cfg)
 
         self.actor_encoder = model_factory.make_model_encoder_func(cfg, obs_space)
         self.actor_core = model_factory.make_model_core_func(cfg, self.actor_encoder.get_out_size())
@@ -208,7 +211,7 @@ class ActorCriticSeparateWeights(ActorCritic):
         self.critic_decoder = model_factory.make_model_decoder_func(cfg, self.critic_core.get_out_size())
         self.decoders = [self.actor_decoder, self.critic_decoder]
 
-        self.critic_linear = nn.Linear(self.critic_decoder.get_out_size(), 1)
+        self.critic_linear = nn.Linear(self.critic_decoder.get_out_size(), num_rewards)
         self.action_parameterization = self.get_action_parameterization(self.critic_decoder.get_out_size())
 
         self.apply(self.initialize_weights)
@@ -253,7 +256,7 @@ class ActorCriticSeparateWeights(ActorCritic):
 
         # second core output corresponds to the critic
         critic_decoder_output = self.critic_decoder(core_outputs[1])
-        values = self.critic_linear(critic_decoder_output).squeeze()
+        values = self.critic_linear(critic_decoder_output)
 
         result = TensorDict(values=values)
         if values_only:
@@ -277,20 +280,20 @@ class ActorCriticSeparateWeights(ActorCritic):
         return result
 
 
-def default_make_actor_critic_func(cfg: Config, obs_space: ObsSpace, action_space: ActionSpace) -> ActorCritic:
+def default_make_actor_critic_func(cfg: Config, obs_space: ObsSpace, action_space: ActionSpace, num_rewards: int) -> ActorCritic:
     from sample_factory.algo.utils.context import global_model_factory
 
     model_factory = global_model_factory()
 
     if cfg.actor_critic_share_weights:
-        return ActorCriticSharedWeights(model_factory, obs_space, action_space, cfg)
+        return ActorCriticSharedWeights(model_factory, obs_space, action_space, num_rewards, cfg)
     else:
-        return ActorCriticSeparateWeights(model_factory, obs_space, action_space, cfg)
+        return ActorCriticSeparateWeights(model_factory, obs_space, action_space, num_rewards, cfg)
 
 
-def create_actor_critic(cfg: Config, obs_space: ObsSpace, action_space: ActionSpace) -> ActorCritic:
+def create_actor_critic(cfg: Config, obs_space: ObsSpace, action_space: ActionSpace, num_rewards: int) -> ActorCritic:
     # check if user specified custom actor/critic creation function
     from sample_factory.algo.utils.context import global_model_factory
 
     make_actor_critic_func = global_model_factory().make_actor_critic_func
-    return make_actor_critic_func(cfg, obs_space, action_space)
+    return make_actor_critic_func(cfg, obs_space, action_space, num_rewards)

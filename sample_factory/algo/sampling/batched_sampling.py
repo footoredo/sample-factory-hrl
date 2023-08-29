@@ -190,7 +190,7 @@ class BatchedVectorEnvRunner(VectorEnvRunner):
 
         assert self.rollout_step == 0
 
-        self.curr_episode_reward = torch.zeros(self.vec_env.num_agents)
+        self.curr_episode_reward = torch.zeros(self.vec_env.num_agents, self.vec_env.num_rewards)
         self.curr_episode_len = torch.zeros(self.vec_env.num_agents, dtype=torch.int32)
         self.min_raw_rewards = torch.empty_like(self.curr_episode_reward).fill_(np.inf)
         self.max_raw_rewards = torch.empty_like(self.curr_episode_reward).fill_(-np.inf)
@@ -271,10 +271,10 @@ class BatchedVectorEnvRunner(VectorEnvRunner):
 
         reports.append({EPISODIC: stats, POLICY_ID_KEY: self.policy_id})
 
-        self.curr_episode_reward[finished] = 0
+        self.curr_episode_reward[finished, :] = 0
         self.curr_episode_len[finished] = 0
-        self.min_raw_rewards[finished] = np.inf
-        self.max_raw_rewards[finished] = -np.inf
+        self.min_raw_rewards[finished, :] = np.inf
+        self.max_raw_rewards[finished, :] = -np.inf
 
         return reports
 

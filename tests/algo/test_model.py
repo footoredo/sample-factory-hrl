@@ -29,7 +29,7 @@ class TestModel:
         torch.set_num_threads(1)
         torch.backends.cudnn.benchmark = True
 
-        actor_critic = create_actor_critic(cfg, env.observation_space, env.action_space)
+        actor_critic = create_actor_critic(cfg, env.observation_space, env.action_space, env.num_rewards)
         device = torch.device(device_type)
         actor_critic.to(device)
 

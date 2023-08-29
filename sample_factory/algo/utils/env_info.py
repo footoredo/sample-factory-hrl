@@ -23,6 +23,7 @@ ENV_INFO_PROTOCOL_VERSION = 1
 class EnvInfo:
     obs_space: gym.Space
     action_space: gym.Space
+    num_rewards: int
     num_agents: int
     gpu_actions: bool  # whether actions provided by the agent should be on GPU or not
     gpu_observations: bool  # whether environment provides data (obs, etc.) on GPU or not
@@ -41,6 +42,7 @@ class EnvInfo:
 def extract_env_info(env: BatchedVecEnv | NonBatchedVecEnv, cfg: Config) -> EnvInfo:
     obs_space = env.observation_space
     action_space = env.action_space
+    num_rewards = env.num_rewards
     num_agents = env.num_agents
 
     gpu_actions = cfg.env_gpu_actions
@@ -59,6 +61,7 @@ def extract_env_info(env: BatchedVecEnv | NonBatchedVecEnv, cfg: Config) -> EnvI
     env_info = EnvInfo(
         obs_space=obs_space,
         action_space=action_space,
+        num_rewards=num_rewards,
         num_agents=num_agents,
         gpu_actions=gpu_actions,
         gpu_observations=gpu_observations,

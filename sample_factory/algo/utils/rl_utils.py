@@ -76,10 +76,11 @@ def calculate_discounted_sum_torch(
 # noinspection NonAsciiCharacters
 @torch.jit.script
 def gae_advantages(rewards: Tensor, dones: Tensor, values: Tensor, valids: Tensor, γ: float, λ: float) -> Tensor:
+    # num_rewards = rewards.shape[-1]
     rewards = rewards.transpose(0, 1)  # [E, T] -> [T, E]
-    dones = dones.transpose(0, 1).float()  # [E, T] -> [T, E]
+    dones = dones.transpose(0, 1).float()[:, :, None]  # [E, T] -> [T, E]
     values = values.transpose(0, 1)  # [E, T+1] -> [T+1, E]
-    valids = valids.transpose(0, 1).float()  # [E, T+1] -> [T+1, E]
+    valids = valids.transpose(0, 1).float()[:, :, None]  # [E, T+1] -> [T+1, E]
 
     assert len(rewards) == len(dones)
     assert len(rewards) + 1 == len(values)

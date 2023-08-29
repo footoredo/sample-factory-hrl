@@ -64,13 +64,13 @@ def action_info(env_info: EnvInfo) -> Tuple[int, int]:
     return num_actions, num_action_distribution_parameters
 
 
-def policy_output_shapes(num_actions, num_action_distribution_parameters) -> List[Tuple[str, List]]:
+def policy_output_shapes(num_actions, num_action_distribution_parameters, num_rewards) -> List[Tuple[str, List]]:
     # policy outputs, this matches the expected output of the actor-critic
     policy_outputs = [
         ("actions", [num_actions]),
         ("action_logits", [num_action_distribution_parameters]),
         ("log_prob_actions", []),
-        ("values", []),
+        ("values", [num_rewards]),
         ("policy_version", []),
     ]
     return policy_outputs
@@ -92,7 +92,8 @@ def alloc_trajectory_tensors(env_info: EnvInfo, num_traj, rollout, rnn_size, dev
     tensors["rnn_states"] = init_tensor([num_traj, rollout + 1], torch.float32, [rnn_size], device, share)
 
     num_actions, num_action_distribution_parameters = action_info(env_info)
-    policy_outputs = policy_output_shapes(num_actions, num_action_distribution_parameters)
+    num_rewards = env_info.num_rewards
+    policy_outputs = policy_output_shapes(num_actions, num_action_distribution_parameters, num_rewards)
 
     # we need one more step to hold values for the last step
     outputs_with_extra_rollout_step = ["values"]
@@ -103,7 +104,7 @@ def alloc_trajectory_tensors(env_info: EnvInfo, num_traj, rollout, rnn_size, dev
         tensors[name] = init_tensor([num_traj, rollout_len], torch.float32, shape, device, share)
 
     # env outputs
-    tensors["rewards"] = init_tensor([num_traj, rollout], torch.float32, [], device, share)
+    tensors["rewards"] = init_tensor([num_traj, rollout], torch.float32, [num_rewards], device, share)
     tensors["rewards"].fill_(-42.42)  # if we're using uninitialized values by mistake it will be obvious
     tensors["dones"] = init_tensor([num_traj, rollout], torch.bool, [], device, share)
     tensors["dones"].fill_(True)
@@ -128,7 +129,8 @@ def alloc_policy_output_tensors(cfg, env_info: EnvInfo, rnn_size, device, share)
         policy_outputs_shape += [envs_per_split, num_agents]
 
     num_actions, num_action_distribution_parameters = action_info(env_info)
-    policy_outputs = policy_output_shapes(num_actions, num_action_distribution_parameters)
+    num_rewards = env_info.num_rewards
+    policy_outputs = policy_output_shapes(num_actions, num_action_distribution_parameters, num_rewards)
     policy_outputs += [("new_rnn_states", [rnn_size])]  # different name so we don't override current step rnn_state
 
     output_names, output_shapes = list(zip(*policy_outputs))

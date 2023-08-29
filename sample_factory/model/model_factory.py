@@ -7,7 +7,7 @@ from sample_factory.model.encoder import Encoder, default_make_encoder_func
 from sample_factory.utils.typing import ActionSpace, Config, ObsSpace
 from sample_factory.utils.utils import log
 
-MakeActorCriticFunc = Callable[[Config, ObsSpace, ActionSpace], ActorCritic]
+MakeActorCriticFunc = Callable[[Config, ObsSpace, ActionSpace, int], ActorCritic]
 MakeEncoderFunc = Callable[[Config, ObsSpace], Encoder]
 MakeCoreFunc = Callable[[Config, int], ModelCore]
 MakeDecoderFunc = Callable[[Config, int], Decoder]

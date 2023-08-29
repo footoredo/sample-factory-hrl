@@ -157,6 +157,8 @@ class BatchedVecEnv(Wrapper[DictOfTensorObservations, TensorActions]):
         else:
             env = BatchedListToDictWrapper(env)
 
+        self.num_rewards = env.num_rewards
+
         is_multiagent, num_agents = get_multiagent_info(env)
         self.is_multiagent: bool = is_multiagent
         self.num_agents: int = num_agents
@@ -359,6 +361,8 @@ class NonBatchedVecEnv(Wrapper[ListObservations, ListActions]):
             env = NonBatchedMultiAgentWrapper(env)
         if not isinstance(env.observation_space, spaces.Dict):
             env = NonBatchedDictObservationsWrapper(env)
+
+        self.num_rewards = env.num_rewards
 
         is_multiagent, num_agents = get_multiagent_info(env)
         self.is_multiagent: bool = is_multiagent

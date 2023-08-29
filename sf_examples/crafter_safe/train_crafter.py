@@ -102,6 +102,8 @@ class CustomEnv(gym.Env, TrainingInfoInterface, RewardShapingInterface):
         env = ImageToPyTorch(env)
         self.env = env
 
+        self.num_rewards = 2
+
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
 
@@ -128,8 +130,10 @@ class CustomEnv(gym.Env, TrainingInfoInterface, RewardShapingInterface):
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.episode_reward += reward
         health = info['inventory']['health']
+        pen = 0
         if health < self.last_health:
             # reward -= self.pen
+            pen = 1
             reward -= 0
             self.health_lost_count += 1
         self.last_health = health
@@ -146,7 +150,7 @@ class CustomEnv(gym.Env, TrainingInfoInterface, RewardShapingInterface):
             self.episode_reward = 0
             self.pen += 0.02 * (self.avg_health_lost_count - 1)
             self.pen = min(max(self.pen, 0), 5)
-        return obs, reward, terminated, truncated, info
+        return obs, np.array([reward, pen], dtype=np.float32), terminated, truncated, info
 
     def render(self):
         pass

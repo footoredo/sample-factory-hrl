@@ -210,7 +210,7 @@ class Learner(Configurable):
         log.debug("Initializing actor-critic model on device %s", self.device)
 
         # trainable torch module
-        self.actor_critic = create_actor_critic(self.cfg, self.env_info.obs_space, self.env_info.action_space)
+        self.actor_critic = create_actor_critic(self.cfg, self.env_info.obs_space, self.env_info.action_space, self.env_info.num_rewards)
         log.debug("Created Actor Critic model with architecture:")
         log.debug(self.actor_critic)
         self.actor_critic.model_to_device(self.device)
@@ -425,8 +425,8 @@ class Learner(Configurable):
     @staticmethod
     def _policy_loss(ratio, adv, clip_ratio_low, clip_ratio_high, valids, num_invalids: int):
         clipped_ratio = torch.clamp(ratio, clip_ratio_low, clip_ratio_high)
-        loss_unclipped = ratio * adv
-        loss_clipped = clipped_ratio * adv
+        loss_unclipped = ratio * adv[..., 0]
+        loss_clipped = clipped_ratio * adv[..., 0]
         loss = torch.min(loss_unclipped, loss_clipped)
         loss = masked_select(loss, valids, num_invalids)
         loss = -loss.mean()
@@ -978,7 +978,8 @@ class Learner(Configurable):
 
                 # Multiply by both time_out and done flags to make sure we count only timeouts in terminal states.
                 # There was a bug in older versions of isaacgym where timeouts were reported for non-terminal states.
-                buff["rewards"].add_(self.cfg.gamma * denormalized_values[:, :-1] * buff["time_outs"] * buff["dones"])
+                assert buff["rewards"].shape == denormalized_values[:, :-1].shape
+                buff["rewards"].add_(self.cfg.gamma * denormalized_values[:, :-1] * buff["time_outs"][:, :, None] * buff["dones"][:, :, None])
 
             if not self.cfg.with_vtrace:
                 # calculate advantage estimate (in case of V-trace it is done separately for each minibatch)
@@ -991,7 +992,7 @@ class Learner(Configurable):
                     self.cfg.gae_lambda,
                 )
                 # here returns are not normalized yet, so we should use denormalized values
-                buff["returns"] = buff["advantages"] + buff["valids"][:, :-1] * denormalized_values[:, :-1]
+                buff["returns"] = buff["advantages"] + buff["valids"][:, :-1, None] * denormalized_values[:, :-1]
 
             # remove next step obs, rnn_states, and values from the batch, we don't need them anymore
             for key in ["normalized_obs", "rnn_states", "values", "valids"]:
