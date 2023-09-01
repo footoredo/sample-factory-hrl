@@ -53,6 +53,8 @@ from crafter.env import Env as CrafterEnv
 
 CRAFTER_KWARGS = dict(
     size=(84, 84),
+    length=200,
+    target_achievement='collect_diamond'
 )
 
 
@@ -91,7 +93,7 @@ class NewGymCrafter(gym.Env):
         return obs, reward, done, False, info
 
     def render(self):
-        pass
+        return self.env.render()
 
 
 class CustomEnv(gym.Env, TrainingInfoInterface, RewardShapingInterface):
@@ -102,7 +104,7 @@ class CustomEnv(gym.Env, TrainingInfoInterface, RewardShapingInterface):
         env = ImageToPyTorch(env)
         self.env = env
 
-        self.num_rewards = 2
+        self.num_rewards = 3
 
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
@@ -130,30 +132,32 @@ class CustomEnv(gym.Env, TrainingInfoInterface, RewardShapingInterface):
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.episode_reward += reward
         health = info['inventory']['health']
-        pen = 0
-        if health < self.last_health:
-            # reward -= self.pen
-            pen = 1
-            reward -= 0
-            self.health_lost_count += 1
+        # pen = 0
+        # if health < self.last_health:
+        #     # reward -= self.pen
+        #     pen = 1
+        #     reward -= 0
+        #     self.health_lost_count += 1
+        lost_health = info['turn_lost_health']
+        killed_monster = info['turn_killed_monster']
         self.last_health = health
         if terminated or truncated:
             episode_extra_stats = {
                 f'unlock_{key}': int(value > 0) for key, value in info['achievements'].items()
             }
-            episode_extra_stats['health_lost_count'] = self.health_lost_count
+            # episode_extra_stats['health_lost_count'] = self.health_lost_count
             episode_extra_stats['episode_reward'] = self.episode_reward
-            episode_extra_stats['pen'] = self.pen
+            # episode_extra_stats['pen'] = self.pen
             info['episode_extra_stats'] = episode_extra_stats
             self.health_lost_count = 0
             self.last_health = 9
             self.episode_reward = 0
             self.pen += 0.02 * (self.avg_health_lost_count - 1)
             self.pen = min(max(self.pen, 0), 5)
-        return obs, np.array([reward, pen], dtype=np.float32), terminated, truncated, info
+        return obs, np.array([reward, lost_health, -killed_monster], dtype=np.float32), terminated, truncated, info
 
     def render(self):
-        pass
+        return self.env.render()
 
     def get_default_reward_shaping(self) -> Dict[str, Any]:
         return self.reward_shaping
@@ -209,8 +213,9 @@ def register_custom_components():
 
 def add_custom_env_args(_env, p: argparse.ArgumentParser, evaluation=False):
     # You can extend the command line arguments here
-    p.add_argument("--crafter_monitor", default=False, action="store_true")
-    p.add_argument("--save_replay", default=False, action="store_true")
+    # p.add_argument("--crafter_monitor", default=False, action="store_true")
+    # p.add_argument("--save_replay", default=False, action="store_true")
+    pass
 
 def custom_env_override_defaults(_env, parser):
     # Modify the default arguments when using this env.

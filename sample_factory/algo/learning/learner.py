@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from torch import Tensor
 from torch.nn import Module
+import torch.nn.functional as F
 
 from sample_factory.algo.learning.rnn_utils import build_core_out_from_seq, build_rnn_inputs
 from sample_factory.algo.utils.action_distributions import get_action_distribution, is_continuous_action_space
@@ -174,6 +175,11 @@ class Learner(Configurable):
         self.exploration_loss_func: Optional[Callable] = None
         self.kl_loss_func: Optional[Callable] = None
 
+        self.lag = None
+        self.violations = None
+        self.constraint_limits = None
+        self.constraint_scales = None
+
         self.is_initialized = False
 
     def init(self) -> InitModelData:
@@ -247,6 +253,11 @@ class Learner(Configurable):
         self.lr_scheduler = get_lr_scheduler(self.cfg)
         self.curr_lr = self.cfg.learning_rate if self.curr_lr is None else self.curr_lr
         self._apply_lr(self.curr_lr)
+
+        self.lag = torch.zeros((3,), dtype=torch.float32, device=self.device)
+        self.violations = torch.zeros((3,), dtype=torch.float32, device=self.device)
+        self.constraint_limits = torch.tensor([2.5, -1], dtype=torch.float32, device=self.device)
+        self.constraint_scales = torch.tensor([0.1, 1], dtype=torch.float32, device=self.device)
 
         self.is_initialized = True
 
@@ -423,10 +434,19 @@ class Learner(Configurable):
             self.policy_to_load = None
 
     @staticmethod
-    def _policy_loss(ratio, adv, clip_ratio_low, clip_ratio_high, valids, num_invalids: int):
+    def _policy_loss(ratio, adv, clip_ratio_low, clip_ratio_high, valids, num_invalids: int, lag):
         clipped_ratio = torch.clamp(ratio, clip_ratio_low, clip_ratio_high)
-        loss_unclipped = ratio * adv[..., 0]
-        loss_clipped = clipped_ratio * adv[..., 0]
+        # print("adv", adv.shape, "lag", lag.shape)
+        # _adv = adv[..., 0] - (lag[None] * adv[..., 1:]).sum(-1)
+        # soft_lag = F.softmax(lag, 0)[None]
+        # soft_lag = lag[None]
+        # print(soft_lag)
+        # soft_lag[1:] *= -1
+        # print(soft_lag)
+        # _adv = adv[..., 0] * soft_lag[..., 0] - (adv[..., 1:] * soft_lag[..., 1:]).sum(-1)
+        _adv = adv[..., 0]
+        loss_unclipped = ratio * _adv
+        loss_clipped = clipped_ratio * _adv
         loss = torch.min(loss_unclipped, loss_clipped)
         loss = masked_select(loss, valids, num_invalids)
         loss = -loss.mean()
@@ -643,13 +663,28 @@ class Learner(Configurable):
 
         with self.timing.add_time("losses"):
             # noinspection PyTypeChecker
-            policy_loss = self._policy_loss(ratio, adv, clip_ratio_low, clip_ratio_high, valids, num_invalids)
+            policy_loss = self._policy_loss(ratio, adv, clip_ratio_low, clip_ratio_high, valids, num_invalids, self.lag)
             exploration_loss = self.exploration_loss_func(action_distribution, valids, num_invalids)
             kl_old, kl_loss = self.kl_loss_func(
                 self.actor_critic.action_space, mb.action_logits, action_distribution, valids, num_invalids
             )
             old_values = mb["values"]
             value_loss = self._value_loss(values, old_values, targets, clip_value, valids, num_invalids)
+
+        # # print("rewards", mb.rewards.shape)
+        # violations = (mb.rewards.sum(0) / (mb.dones.sum() + 1))
+        # scaled_diff = (violations - self.constraint_limits)
+        # soft_lag = F.softmax(self.lag, 0)
+        # lag_grad = soft_lag - soft_lag * soft_lag
+        # # lag_grad = torch.ones_like(self.lag)
+        # # print(scaled_diff)
+        # # print(soft_lag)
+        # # print(torch.exp(self.lag))
+        # # print(lag_grad)
+        # # print()
+        # self.lag = torch.clamp(self.lag + 0.1 * scaled_diff * lag_grad, 0, 10)
+        # # self.lag = torch.clamp(self.lag + 0.01 * (violations - self.constraint_limits), 0, 10)
+        # self.violations = violations
 
         loss_summaries = dict(
             ratio=ratio,
@@ -907,6 +942,15 @@ class Learner(Configurable):
         stats.version_diff_avg = version_diff.mean()
         stats.version_diff_min = version_diff.min()
         stats.version_diff_max = version_diff.max()
+
+        # soft_lag = F.softmax(self.lag, 0)
+        # for i in range(self.lag.shape[0] - 1):
+        #     stats[f"lag_{i}"] = self.lag[i + 1]
+        #     stats[f"soft_lag_{i}"] = soft_lag[i + 1]
+        #     stats[f"violations_{i}"] = self.violations[i + 1]
+        # stats.main_lag = self.lag[0]
+        # stats.main_soft_lag = soft_lag[0]
+        # stats.main_violation = self.violations[0]
 
         for key, value in stats.items():
             stats[key] = to_scalar(value)
