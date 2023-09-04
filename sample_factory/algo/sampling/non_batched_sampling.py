@@ -8,7 +8,7 @@ import gym
 import numpy as np
 
 from sample_factory.algo.sampling.sampling_utils import VectorEnvRunner, record_episode_statistics_wrapper_stats
-from sample_factory.algo.utils.agent_policy_mapping import AgentPolicyMapping
+from sample_factory.algo.utils.agent_policy_mapping import AgentPolicyMapping, MultiAgentPolicyMapping
 from sample_factory.algo.utils.env_info import EnvInfo, check_env_info
 from sample_factory.algo.utils.make_env import make_env_func_non_batched
 from sample_factory.algo.utils.misc import EPISODIC, POLICY_ID_KEY
@@ -20,6 +20,22 @@ from sample_factory.utils.attr_dict import AttrDict
 from sample_factory.utils.timing import Timing
 from sample_factory.utils.typing import Config, MpQueue, PolicyID
 from sample_factory.utils.utils import debug_log_every_n, log, set_attr_if_exists
+
+
+class MetaController:
+    def __init__(self):
+        pass
+
+    def process_actions(self, actions):
+        return [actions[0]] * len(actions)
+    
+    def process_infos(self, infos):
+        for i in range(len(infos)):
+            if i == 0:
+                infos[i]["actual_acting"] = True
+            else:
+                infos[i]["actual_acting"] = False
+        return infos
 
 
 class ActorState:
@@ -195,6 +211,12 @@ class ActorState:
         # -1 policy_id does not match any valid policy on the learner, therefore this will be treated as
         # invalid data coming from a different policy and should be ignored by the learner.
         policy_id = -1 if not self.is_active else self.curr_policy_id
+
+        # in case of hierarchical learning.
+        actual_acting = info.get("actual_acting", True)
+        if not actual_acting:
+            policy_id = -1
+
         self.curr_traj_buffer["policy_id"][rollout_step] = policy_id
 
         # multiply by frameskip to get the episode lenghts matching the actual number of simulated steps
@@ -366,7 +388,13 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
 
         self.training_info: List[Optional[Dict]] = training_info
 
-        self.policy_mgr = AgentPolicyMapping(self.cfg, self.env_info)
+        self.hierarchical = self.cfg.hierarchical_rl
+        self.meta_controller = MetaController()
+
+        if self.hierarchical:
+            self.policy_mgr = MultiAgentPolicyMapping(self.cfg, self.env_info)
+        else:
+            self.policy_mgr = AgentPolicyMapping(self.cfg, self.env_info)
 
     def init(self, timing: Timing):
         """
@@ -631,7 +659,11 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
         for env_i, e in enumerate(self.envs):
             with timing.add_time("env_step"):
                 actions = [s.curr_actions() for s in self.actor_states[env_i]]
+                if self.hierarchical:
+                    actions = self.meta_controller.process_actions(actions)
                 new_obs, rewards, terminated, truncated, infos = e.step(actions)
+                if self.hierarchical:
+                    infos = self.meta_controller.process_infos(infos)
 
             with timing.add_time("overhead"):
                 stats = self._process_env_step(new_obs, rewards, terminated, truncated, infos, env_i)

@@ -61,6 +61,18 @@ def add_rl_args(p: ArgumentParser):
         "Envs with complex action spaces and RNN policies tend to be particularly sensitive. ",
     )
     p.add_argument(
+        "--lagrangian",
+        default=False,
+        type=str2bool,
+        help="lagrangian."
+    )
+    p.add_argument(
+        "--hierarchical_rl",
+        default=False,
+        type=str2bool,
+        help="Use hierarchical RL."
+    )
+    p.add_argument(
         "--serial_mode",
         default=False,
         type=str2bool,
