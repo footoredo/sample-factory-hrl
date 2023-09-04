@@ -1,5 +1,6 @@
 from typing import Optional
 
+import numpy as np
 import gym
 
 from sample_factory.utils.utils import is_module_available
@@ -37,7 +38,19 @@ def mujoco_env_by_name(name):
     raise Exception("Unknown Mujoco env")
 
 
+class MultiRewardWrapper(gym.Wrapper):
+    @property
+    def num_rewards(self):
+        return 5
+    
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        # print(info.keys())
+        return obs, np.array([info['forward_reward'], -info['reward_ctrl'], np.abs(info['x_velocity']), np.abs(info['y_velocity']), info['distance_from_origin']]), terminated, truncated, info
+
+
 def make_mujoco_env(env_name, _cfg, _env_config, render_mode: Optional[str] = None, **kwargs):
     mujoco_spec = mujoco_env_by_name(env_name)
     env = gym.make(mujoco_spec.env_id, render_mode=render_mode)
+    env = MultiRewardWrapper(env)
     return env

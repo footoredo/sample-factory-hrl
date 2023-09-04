@@ -254,10 +254,13 @@ class Learner(Configurable):
         self.curr_lr = self.cfg.learning_rate if self.curr_lr is None else self.curr_lr
         self._apply_lr(self.curr_lr)
 
-        self.lag = torch.zeros((3,), dtype=torch.float32, device=self.device)
-        self.violations = torch.zeros((3,), dtype=torch.float32, device=self.device)
-        self.constraint_limits = torch.tensor([2.5, -1], dtype=torch.float32, device=self.device)
-        self.constraint_scales = torch.tensor([0.1, 1], dtype=torch.float32, device=self.device)
+        self.lag = torch.zeros((5,), dtype=torch.float32, device=self.device)
+        self.violations = torch.zeros((5,), dtype=torch.float32, device=self.device)
+        # self.constraint_limits = torch.tensor([1000, 500, np.inf, 10, np.inf], dtype=torch.float32, device=self.device)
+        self.constraint_limits = torch.tensor([np.inf, np.inf, np.inf, np.inf, np.inf], dtype=torch.float32, device=self.device)
+        self.constraint_scales = torch.tensor([1e-3, 1e-3, 1, 0.1, 1], dtype=torch.float32, device=self.device)
+        # self.constraint_limits = torch.tensor([2.5, -1], dtype=torch.float32, device=self.device)
+        # self.constraint_scales = torch.tensor([0.1, 1], dtype=torch.float32, device=self.device)
 
         self.is_initialized = True
 
@@ -438,13 +441,14 @@ class Learner(Configurable):
         clipped_ratio = torch.clamp(ratio, clip_ratio_low, clip_ratio_high)
         # print("adv", adv.shape, "lag", lag.shape)
         # _adv = adv[..., 0] - (lag[None] * adv[..., 1:]).sum(-1)
-        # soft_lag = F.softmax(lag, 0)[None]
+        soft_lag = F.softmax(lag, 0)[None]
+        # soft_lag = 
         # soft_lag = lag[None]
         # print(soft_lag)
         # soft_lag[1:] *= -1
         # print(soft_lag)
-        # _adv = adv[..., 0] * soft_lag[..., 0] - (adv[..., 1:] * soft_lag[..., 1:]).sum(-1)
-        _adv = adv[..., 0]
+        _adv = adv[..., 0] * soft_lag[..., 0] - (adv[..., 1:] * soft_lag[..., 1:]).sum(-1)
+        # _adv = adv[..., 0]
         loss_unclipped = ratio * _adv
         loss_clipped = clipped_ratio * _adv
         loss = torch.min(loss_unclipped, loss_clipped)
@@ -671,20 +675,22 @@ class Learner(Configurable):
             old_values = mb["values"]
             value_loss = self._value_loss(values, old_values, targets, clip_value, valids, num_invalids)
 
-        # # print("rewards", mb.rewards.shape)
-        # violations = (mb.rewards.sum(0) / (mb.dones.sum() + 1))
-        # scaled_diff = (violations - self.constraint_limits)
-        # soft_lag = F.softmax(self.lag, 0)
-        # lag_grad = soft_lag - soft_lag * soft_lag
-        # # lag_grad = torch.ones_like(self.lag)
-        # # print(scaled_diff)
-        # # print(soft_lag)
+        # print("rewards", mb.rewards.shape)
+        violations = (mb.rewards.sum(0) / (mb.dones.sum() + 1))
+        scaled_diff = (violations - self.constraint_limits) * self.constraint_scales
+        soft_lag = F.softmax(self.lag, 0)
+        lag_grad = soft_lag - soft_lag * soft_lag
+        # lag_grad = torch.ones_like(self.lag)
+        # print(self.lag)
+        # print(scaled_diff)
+        # print(soft_lag)
         # # print(torch.exp(self.lag))
-        # # print(lag_grad)
-        # # print()
-        # self.lag = torch.clamp(self.lag + 0.1 * scaled_diff * lag_grad, 0, 10)
-        # # self.lag = torch.clamp(self.lag + 0.01 * (violations - self.constraint_limits), 0, 10)
-        # self.violations = violations
+        # print(lag_grad)
+        # print()
+        self.lag[1:] = torch.clamp(self.lag[1:] + 0.1 * scaled_diff[1:] * lag_grad[1:], -3, 3)
+        self.lag[0] = torch.clamp(self.lag[0] - 0.1 * scaled_diff[0] * lag_grad[0], -3, 3)
+        # self.lag = torch.clamp(self.lag + 0.01 * (violations - self.constraint_limits), 0, 10)
+        self.violations = violations
 
         loss_summaries = dict(
             ratio=ratio,
@@ -943,11 +949,11 @@ class Learner(Configurable):
         stats.version_diff_min = version_diff.min()
         stats.version_diff_max = version_diff.max()
 
-        # soft_lag = F.softmax(self.lag, 0)
-        # for i in range(self.lag.shape[0] - 1):
-        #     stats[f"lag_{i}"] = self.lag[i + 1]
-        #     stats[f"soft_lag_{i}"] = soft_lag[i + 1]
-        #     stats[f"violations_{i}"] = self.violations[i + 1]
+        soft_lag = F.softmax(self.lag, 0)
+        for i in range(self.lag.shape[0]):
+            stats[f"lag_{i}"] = self.lag[i]
+            stats[f"soft_lag_{i}"] = soft_lag[i]
+            stats[f"violations_{i}"] = self.violations[i]
         # stats.main_lag = self.lag[0]
         # stats.main_soft_lag = soft_lag[0]
         # stats.main_violation = self.violations[0]
