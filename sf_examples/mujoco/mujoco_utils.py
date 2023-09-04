@@ -61,6 +61,17 @@ class RecoveryWrapper(gym.Wrapper):
         return obs, np.array([info['forward_reward'], info['reward_ctrl']]), terminated, truncated, info
 
 
+class DummyWrapper(gym.Wrapper):
+    @property
+    def num_rewards(self):
+        return 1
+    
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        # print(info.keys())
+        return obs, np.array([info['forward_reward']]), terminated, truncated, info
+
+
 def make_mujoco_env(env_name, _cfg, _env_config, render_mode: Optional[str] = None, **kwargs):
     mujoco_spec = mujoco_env_by_name(env_name)
     env = gym.make(mujoco_spec.env_id, render_mode=render_mode)

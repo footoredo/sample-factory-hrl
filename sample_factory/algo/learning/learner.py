@@ -618,7 +618,7 @@ class Learner(Configurable):
             # super large/small values can cause numerical problems and are probably noise anyway
             ratio = torch.clamp(ratio, 0.05, 20.0)
 
-            values = result["values"].squeeze()
+            values = result["values"]
 
             del core_outputs
 
