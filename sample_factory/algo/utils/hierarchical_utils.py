@@ -37,12 +37,10 @@ ListOfDictObservations = Sequence[DictObservations]
 class RecoveryRLEnv(Wrapper):
     def __init__(self, env):
         super().__init__(env)
-        assert env.num_rewards == 2
+        # assert env.num_rewards == 2
 
         self.num_agents = 2
         self.is_multiagent = True
-
-        self.num_rewards = 1
 
     def _replicate(self, item):
         return [copy.deepcopy(item) for _ in range(self.num_agents)]
@@ -56,5 +54,5 @@ class RecoveryRLEnv(Wrapper):
         _obs, _reward, _terminated, _truncated, _info = self.env.step(actions[0])
         if _terminated or _truncated:
             _obs, _info = self.env.reset()
-        return self._replicate(_obs), _reward[:, None], self._replicate(_terminated), \
+        return self._replicate(_obs), [_reward, _reward[::-1]], self._replicate(_terminated), \
             self._replicate(_truncated), self._replicate(_info)

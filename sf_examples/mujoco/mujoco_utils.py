@@ -53,12 +53,13 @@ def mujoco_env_by_name(name):
 class RecoveryWrapper(gym.Wrapper):
     @property
     def num_rewards(self):
-        return 2
+        return 3
     
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         # print(info.keys())
-        return obs, np.array([info['forward_reward'], info['reward_ctrl']]), terminated, truncated, info
+        # return obs, np.array([info['forward_reward'], info['reward_ctrl'] < -20, info['reward_ctrl']]), terminated, truncated, info
+        return obs, np.array([info['forward_reward'], info['x_velocity'] > 2, -info['x_velocity']]), terminated, truncated, info
 
 
 class DummyWrapper(gym.Wrapper):

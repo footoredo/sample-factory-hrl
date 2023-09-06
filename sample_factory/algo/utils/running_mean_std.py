@@ -6,6 +6,7 @@ Thanks a lot, great module!
 from typing import Dict, Final, List, Optional, Union
 
 import gym
+import numpy as np
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -147,5 +148,21 @@ def running_mean_std_summaries(running_mean_std_module: Union[nn.Module, ScriptM
             res[name] = buf.float().mean()
         elif name.endswith("running_var"):
             res[name.replace("_var", "_std")] = torch.sqrt(buf.float() + _NORM_EPS).mean()
+
+    return res
+
+
+def running_mean_std_summaries_per_slot(running_mean_std_module: Union[nn.Module, ScriptModule, RecursiveScriptModule], slot_id: int):
+    m = running_mean_std_module
+    res = dict()
+
+    for name, buf in m.named_buffers():
+        # converts MODULE_NAME.running_mean_std.obs.running_mean to obs.running_mean
+        name = "_".join(name.split(".")[-2:])
+
+        if name.endswith("running_mean"):
+            res[name] = buf.float()[slot_id].item()
+        elif name.endswith("running_var"):
+            res[name.replace("_var", "_std")] = np.sqrt(buf.float()[slot_id].item() + _NORM_EPS)
 
     return res

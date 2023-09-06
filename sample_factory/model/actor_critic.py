@@ -6,7 +6,7 @@ import torch
 from torch import Tensor, nn
 
 from sample_factory.algo.utils.action_distributions import is_continuous_action_space, sample_actions_log_probs
-from sample_factory.algo.utils.running_mean_std import RunningMeanStdInPlace, running_mean_std_summaries
+from sample_factory.algo.utils.running_mean_std import RunningMeanStdInPlace, running_mean_std_summaries, running_mean_std_summaries_per_slot
 from sample_factory.algo.utils.tensor_dict import TensorDict
 from sample_factory.cfg.configurable import Configurable
 from sample_factory.model.action_parameterization import (
@@ -101,8 +101,9 @@ class ActorCritic(nn.Module, Configurable):
         # Can add more summaries here, like weights statistics
         s = self.obs_normalizer.summaries()
         if self.returns_normalizer is not None:
-            for k, v in running_mean_std_summaries(self.returns_normalizer).items():
-                s[f"returns_{k}"] = v
+            for i in range(self.returns_normalizer.input_shape[0]):
+                for k, v in running_mean_std_summaries_per_slot(self.returns_normalizer, i).items():
+                    s[f"returns_{i}_{k}"] = v
         return s
 
     def action_distribution(self):
@@ -166,6 +167,9 @@ class ActorCriticSharedWeights(ActorCritic):
         values = self.critic_linear(decoder_output)
 
         result = TensorDict(values=values)
+        denormalized_values = values.clone()
+        self.returns_normalizer(denormalized_values, denormalize=True)
+        result["denormalized_values"] = denormalized_values
         if values_only:
             return result
 

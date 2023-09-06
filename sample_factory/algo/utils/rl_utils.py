@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -50,7 +50,7 @@ def samples_per_trajectory(trajectory: TensorDict) -> int:
 
 @torch.jit.script
 def calculate_discounted_sum_torch(
-    x: Tensor, dones: Tensor, valids: Tensor, discount: float, x_last: Optional[Tensor] = None
+    x: Tensor, dones: Tensor, valids: Tensor, discount: Tensor, x_last: Optional[Tensor] = None
 ) -> Tensor:
     """
     Computing cumulative sum (of something) for the trajectory, taking episode termination into consideration.
@@ -75,7 +75,7 @@ def calculate_discounted_sum_torch(
 
 # noinspection NonAsciiCharacters
 @torch.jit.script
-def gae_advantages(rewards: Tensor, dones: Tensor, values: Tensor, valids: Tensor, γ: float, λ: float) -> Tensor:
+def gae_advantages(rewards: Tensor, dones: Tensor, values: Tensor, valids: Tensor, γ: Tensor, λ: float) -> Tensor:
     # num_rewards = rewards.shape[-1]
     rewards = rewards.transpose(0, 1)  # [E, T] -> [T, E]
     dones = dones.transpose(0, 1).float()[:, :, None]  # [E, T] -> [T, E]
@@ -88,7 +88,9 @@ def gae_advantages(rewards: Tensor, dones: Tensor, values: Tensor, valids: Tenso
     # section 3 in GAE paper: calculating advantages
     deltas = (rewards - values[:-1]) * valids[:-1] + (1 - dones) * (γ * values[1:] * valids[1:])
 
-    advantages = calculate_discounted_sum_torch(deltas, dones, valids[:-1], γ * λ)
+    assert γ.shape[-1] == values.shape[-1] == deltas.shape[-1]
+
+    advantages = calculate_discounted_sum_torch(deltas, dones, valids[:-1], (γ * λ)[0])
 
     # transpose advantages back to [E, T] before creating a single experience buffer
     advantages.transpose_(0, 1)

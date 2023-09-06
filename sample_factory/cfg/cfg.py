@@ -183,7 +183,7 @@ def add_rl_args(p: ArgumentParser):
     )
 
     # basic RL parameters
-    p.add_argument("--gamma", default=0.99, type=float, help="Discount factor")
+    p.add_argument("--gamma", default=[0.99], nargs='+', type=float, help="Discount factor")
     p.add_argument(
         "--reward_scale",
         default=1.0,

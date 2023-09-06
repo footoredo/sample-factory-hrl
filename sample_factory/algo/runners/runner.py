@@ -715,7 +715,7 @@ class Runner(EventLoopObject, Configurable):
         self._observers_call(AlgoObserver.on_connect_components, self)
 
     def _should_end_training(self):
-        end = len(self.env_steps) > 0 and all(s > self.cfg.train_for_env_steps for s in self.env_steps.values())
+        end = len(self.env_steps) > 0 and any(s > self.cfg.train_for_env_steps for s in self.env_steps.values())
         end |= self.total_train_seconds > self.cfg.train_for_seconds
         return end
 

@@ -71,6 +71,7 @@ def policy_output_shapes(num_actions, num_action_distribution_parameters, num_re
         ("action_logits", [num_action_distribution_parameters]),
         ("log_prob_actions", []),
         ("values", [num_rewards]),
+        ("denormalized_values", [num_rewards]),
         ("policy_version", []),
     ]
     return policy_outputs

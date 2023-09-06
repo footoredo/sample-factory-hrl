@@ -23,7 +23,7 @@ from sample_factory.algo.utils.optimizers import Lamb
 from sample_factory.algo.utils.rl_utils import gae_advantages, prepare_and_normalize_obs
 from sample_factory.algo.utils.shared_buffers import policy_device
 from sample_factory.algo.utils.tensor_dict import TensorDict, shallow_recursive_copy
-from sample_factory.algo.utils.torch_utils import masked_select, synchronize, to_scalar
+from sample_factory.algo.utils.torch_utils import masked_select, batch_masked_select, synchronize, to_scalar
 from sample_factory.cfg.configurable import Configurable
 from sample_factory.model.actor_critic import ActorCritic, create_actor_critic
 from sample_factory.utils.attr_dict import AttrDict
@@ -476,7 +476,7 @@ class Learner(Configurable):
         value_original_loss = (new_values - target).pow(2)
         value_clipped_loss = (value_clipped - target).pow(2)
         value_loss = torch.max(value_original_loss, value_clipped_loss)
-        value_loss = masked_select(value_loss, valids, num_invalids)
+        value_loss = batch_masked_select(value_loss, valids, num_invalids)
         value_loss = value_loss.mean()
 
         value_loss *= self.cfg.value_loss_coeff
@@ -668,7 +668,8 @@ class Learner(Configurable):
                 adv = mb.advantages
                 targets = mb.returns
 
-            adv_std, adv_mean = torch.std_mean(masked_select(adv, valids, num_invalids))
+            adv_std, adv_mean = torch.std_mean(batch_masked_select(adv, valids, num_invalids), dim=0)
+            # print("valids", valids.sum().item(), adv.shape, adv_std.shape, adv_mean.shape)
             adv = (adv - adv_mean) / torch.clamp_min(adv_std, 1e-7)  # normalize advantage
 
         with self.timing.add_time("losses"):
@@ -886,6 +887,8 @@ class Learner(Configurable):
     def _record_summaries(self, train_loop_vars) -> AttrDict:
         var = train_loop_vars
 
+        num_rewards = self.env_info.num_rewards
+
         self.last_summary_time = time.time()
         stats = AttrDict()
 
@@ -902,7 +905,8 @@ class Learner(Configurable):
         )
         stats.grad_norm = grad_norm
         stats.loss = var.loss
-        stats.value = var.values.mean()
+        for i in range(num_rewards):
+            stats[f"value_{i}"] = var.values[..., i].mean()
         stats.entropy = var.action_distribution.entropy().mean()
         stats.policy_loss = var.policy_loss
         stats.kl_loss = var.kl_loss
@@ -912,10 +916,11 @@ class Learner(Configurable):
         stats.act_min = var.mb.actions.min()
         stats.act_max = var.mb.actions.max()
 
-        stats.adv_min = var.mb.advantages.min()
-        stats.adv_max = var.mb.advantages.max()
-        stats.adv_std = var.adv_std
-        stats.adv_mean = var.adv_mean
+        for i in range(num_rewards):
+            stats[f"adv_min_{i}"] = var.mb.advantages[..., i].min()
+            stats[f"adv_max_{i}"] = var.mb.advantages[..., i].max()
+            stats[f"adv_std_{i}"] = var.adv_std[i]
+            stats[f"adv_mean_{i}"] = var.adv_mean[i]
         stats.max_abs_logprob = torch.abs(var.mb.action_logits).max()
 
         if hasattr(var.action_distribution, "summaries"):
@@ -924,25 +929,27 @@ class Learner(Configurable):
         if var.epoch == self.cfg.num_epochs - 1 and var.batch_num == len(var.minibatches) - 1:
             # we collect these stats only for the last PPO batch, or every time if we're only doing one batch, IMPALA-style
             valid_ratios = masked_select(var.ratio, var.mb.valids, var.num_invalids)
-            ratio_mean = torch.abs(1.0 - valid_ratios).mean().detach()
-            ratio_min = valid_ratios.min().detach()
-            ratio_max = valid_ratios.max().detach()
+            if valid_ratios.nelement() > 0:
+                ratio_mean = torch.abs(1.0 - valid_ratios).mean().detach()
+                ratio_min = valid_ratios.min().detach()
+                ratio_max = valid_ratios.max().detach()
+                stats.ratio_mean = ratio_mean
+                stats.ratio_min = ratio_min
+                stats.ratio_max = ratio_max
             # log.debug('Learner %d ratio mean min max %.4f %.4f %.4f', self.policy_id, ratio_mean.cpu().item(), ratio_min.cpu().item(), ratio_max.cpu().item())
 
             value_delta = torch.abs(var.values - var.mb.values)
             value_delta_avg, value_delta_max = value_delta.mean(), value_delta.max()
 
-            stats.kl_divergence = var.kl_old_mean
-            stats.kl_divergence_max = var.kl_old.max()
+            if var.kl_old.nelement() > 0:
+                stats.kl_divergence = var.kl_old_mean
+                stats.kl_divergence_max = var.kl_old.max()
             stats.value_delta = value_delta_avg
             stats.value_delta_max = value_delta_max
             # noinspection PyUnresolvedReferences
             stats.fraction_clipped = (
                 (valid_ratios < var.clip_ratio_low).float() + (valid_ratios > var.clip_ratio_high).float()
             ).mean()
-            stats.ratio_mean = ratio_mean
-            stats.ratio_min = ratio_min
-            stats.ratio_max = ratio_max
             stats.num_sgd_steps = var.num_sgd_steps
 
         # this caused numerical issues on some versions of PyTorch with second moment reaching infinity
@@ -952,9 +959,10 @@ class Learner(Configurable):
         stats.adam_max_second_moment = adam_max_second_moment
 
         version_diff = (var.curr_policy_version - var.mb.policy_version)[var.mb.policy_id == self.policy_id]
-        stats.version_diff_avg = version_diff.mean()
-        stats.version_diff_min = version_diff.min()
-        stats.version_diff_max = version_diff.max()
+        if version_diff.nelement() > 0:
+            stats.version_diff_avg = version_diff.mean()
+            stats.version_diff_min = version_diff.min()
+            stats.version_diff_max = version_diff.max()
 
         if self.use_lagrangian:
             soft_lag = F.softmax(self.lag, 0)
@@ -1026,6 +1034,8 @@ class Learner(Configurable):
                 # values are not normalized in this case, so we can use them as is
                 denormalized_values = buff["values"]
 
+            gamma_tensor = torch.tensor(self.cfg.gamma, dtype=buff["rewards"].dtype, device=buff["rewards"].device)[None, None]
+
             if self.cfg.value_bootstrap:
                 # Value bootstrapping is a technique that reduces the surprise for the critic in case
                 # we're ending the episode by timeout. Intuitively, in this case the cumulative return for the last step
@@ -1037,7 +1047,7 @@ class Learner(Configurable):
                 # Multiply by both time_out and done flags to make sure we count only timeouts in terminal states.
                 # There was a bug in older versions of isaacgym where timeouts were reported for non-terminal states.
                 assert buff["rewards"].shape == denormalized_values[:, :-1].shape
-                buff["rewards"].add_(self.cfg.gamma * denormalized_values[:, :-1] * buff["time_outs"][:, :, None] * buff["dones"][:, :, None])
+                buff["rewards"].add_(gamma_tensor * denormalized_values[:, :-1] * buff["time_outs"][:, :, None] * buff["dones"][:, :, None])
 
             if not self.cfg.with_vtrace:
                 # calculate advantage estimate (in case of V-trace it is done separately for each minibatch)
@@ -1046,7 +1056,7 @@ class Learner(Configurable):
                     buff["dones"],
                     denormalized_values,
                     buff["valids"],
-                    self.cfg.gamma,
+                    gamma_tensor,
                     self.cfg.gae_lambda,
                 )
                 # here returns are not normalized yet, so we should use denormalized values
@@ -1055,6 +1065,8 @@ class Learner(Configurable):
             # remove next step obs, rnn_states, and values from the batch, we don't need them anymore
             for key in ["normalized_obs", "rnn_states", "values", "valids"]:
                 buff[key] = buff[key][:, :-1]
+
+            # print(buff["actions"].shape, buff["valids"].shape)
 
             dataset_size = buff["actions"].shape[0] * buff["actions"].shape[1]
             for d, k, v in iterate_recursively(buff):
@@ -1066,6 +1078,7 @@ class Learner(Configurable):
 
             # return normalization parameters are only used on the learner, no need to lock the mutex
             if self.cfg.normalize_returns:
+                # print(buff["returns"].shape, buff["returns"][:5])
                 self.actor_critic.returns_normalizer(buff["returns"])  # in-place
 
             num_invalids = dataset_size - buff["valids"].sum().item()

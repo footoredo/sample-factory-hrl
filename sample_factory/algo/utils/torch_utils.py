@@ -53,6 +53,16 @@ def masked_select(x: torch.Tensor, mask: torch.Tensor, num_non_mask: int) -> tor
         return x
     else:
         return torch.masked_select(x, mask)
+    
+
+def batch_masked_select(x: torch.Tensor, mask: torch.Tensor, num_non_mask: int) -> torch.Tensor:
+    if num_non_mask == 0:
+        return x
+    else:
+        batch_size = mask.shape[0]
+        shape = x.shape[1:]
+        nonzeros = mask.sum().item()
+        return torch.masked_select(x, mask.view(batch_size, *([1] * len(shape)))).view(nonzeros, *shape)
 
 
 def synchronize(cfg: Config, device: torch.device | str) -> None:
