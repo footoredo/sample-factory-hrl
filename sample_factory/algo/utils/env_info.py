@@ -24,6 +24,10 @@ class EnvInfo:
     obs_space: gym.Space
     action_space: gym.Space
     num_rewards: int
+    reward_labels: List[str]
+    reward_weights: List[List[float]]
+    recovery_weights: List[float]
+    suppression_weights: Optional[List[List[float]]]
     num_agents: int
     gpu_actions: bool  # whether actions provided by the agent should be on GPU or not
     gpu_observations: bool  # whether environment provides data (obs, etc.) on GPU or not
@@ -44,6 +48,10 @@ def extract_env_info(env: BatchedVecEnv | NonBatchedVecEnv, cfg: Config) -> EnvI
     action_space = env.action_space
     num_rewards = env.num_rewards
     num_agents = env.num_agents
+    reward_labels = env.reward_labels
+    reward_weights = env.reward_weights
+    recovery_weights = env.recovery_weights
+    suppression_weights = env.suppression_weights
 
     gpu_actions = cfg.env_gpu_actions
     gpu_observations = cfg.env_gpu_observations
@@ -62,6 +70,10 @@ def extract_env_info(env: BatchedVecEnv | NonBatchedVecEnv, cfg: Config) -> EnvI
         obs_space=obs_space,
         action_space=action_space,
         num_rewards=num_rewards,
+        reward_labels=reward_labels,
+        reward_weights=reward_weights,
+        suppression_weights=suppression_weights,
+        recovery_weights=recovery_weights,
         num_agents=num_agents,
         gpu_actions=gpu_actions,
         gpu_observations=gpu_observations,

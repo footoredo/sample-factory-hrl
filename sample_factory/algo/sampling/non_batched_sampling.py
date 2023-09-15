@@ -15,52 +15,12 @@ from sample_factory.algo.utils.misc import EPISODIC, POLICY_ID_KEY
 from sample_factory.algo.utils.shared_buffers import BufferMgr
 from sample_factory.algo.utils.tensor_dict import TensorDict, to_numpy
 from sample_factory.algo.utils.tensor_utils import clone_tensor, ensure_numpy_array
+from sample_factory.algo.utils.hierarchical_utils import MetaController
 from sample_factory.envs.env_utils import find_training_info_interface, set_reward_shaping, set_training_info
 from sample_factory.utils.attr_dict import AttrDict
 from sample_factory.utils.timing import Timing
 from sample_factory.utils.typing import Config, MpQueue, PolicyID
 from sample_factory.utils.utils import debug_log_every_n, log, set_attr_if_exists
-
-
-class MetaController:
-    def __init__(self):
-        self.num_agents = 2
-
-        self.last_observation = None
-        self.policy_outputs = [None for _ in range(self.num_agents)]
-        self.ready = [False for _ in range(self.num_agents)]
-
-        self.policy_idx = None
-
-    def _select_policy(self):
-        if all(self.ready):
-            if self.policy_outputs[0]["denormalized_values"][1] > 0.5:
-            # if self.policy_outputs[0]["denormalized_values"][1] > 1e9:
-                self.policy_idx = 1
-            else:
-                self.policy_idx = 0
-            for i in range(self.num_agents):
-                self.ready[i] = False
-
-    def set_observation(self, observation):
-        self.last_observation = observation
-
-    def set_policy_outputs(self, policy_idx, policy_outputs):
-        self.policy_outputs[policy_idx] = policy_outputs
-        # print(policy_outputs, policy_idx)
-        self.ready[policy_idx] = True
-        self._select_policy()
-
-    def process_actions(self, actions):
-        return [actions[self.policy_idx]] * len(actions)
-    
-    def process_infos(self, infos):
-        for i in range(len(infos)):
-            if i == self.policy_idx:
-                infos[i]["actual_acting"] = True
-            else:
-                infos[i]["actual_acting"] = False
-        return infos
 
 
 class ActorState:
@@ -241,10 +201,12 @@ class ActorState:
 
         # in case of hierarchical learning.
         actual_acting = info.get("actual_acting", True)
-        if not actual_acting:
-            policy_id = -2
-        else:
-            self.last_episode_actual_acting += 1
+        # if not actual_acting:
+        #     policy_id = -2
+        #     assert False
+        # else:
+        #     self.last_episode_actual_acting += 1
+        self.last_episode_actual_acting += int(actual_acting)
 
         self.curr_traj_buffer["policy_id"][rollout_step] = policy_id
 
@@ -257,16 +219,29 @@ class ActorState:
 
         report = None
         if done:
-            report = self._episodic_stats(info)
+            report = self._set_terminated(info)
 
-            self._update_training_info()
+        return report
+    
+    def _set_terminated(self, info):
+        report = self._episodic_stats(info)
 
-            new_policy_id = self.policy_mgr.get_policy_for_agent(self.agent_idx, self.env_idx, self.global_env_idx)
-            if new_policy_id != self.curr_policy_id:
-                self._on_new_policy(new_policy_id)
+        self._update_training_info()
 
-            self.last_episode_reward = self.last_episode_duration = 0.0
-            self.last_episode_actual_acting = self.last_episode_length = 0
+        new_policy_id = self.policy_mgr.get_policy_for_agent(self.agent_idx, self.env_idx, self.global_env_idx)
+        if new_policy_id != self.curr_policy_id:
+            self._on_new_policy(new_policy_id)
+
+        self.last_episode_reward = self.last_episode_duration = 0.0
+        self.last_episode_actual_acting = self.last_episode_length = 0
+
+        return report
+    
+    def set_terminated(self, info, rollout_step: int):
+        if rollout_step >= 0:
+            self.curr_traj_buffer["dones"][rollout_step] = True
+
+        report = self._set_terminated(info)
 
         return report
 
@@ -348,11 +323,14 @@ class ActorState:
             self.reset_rnn_state()
 
     def _episodic_stats(self, info: Dict) -> Dict[str, Any]:
+        if self.last_episode_length == 0:
+            return None
+        
         stats = dict(
             reward=self.last_episode_reward,
             len=self.last_episode_duration,
             episode_extra_stats=info.get("episode_extra_stats", dict()),
-            act_ratio=self.last_episode_actual_acting / self.last_episode_length
+            act_ratio=self.last_episode_actual_acting / info.get("actual_episode_length", self.last_episode_length)
         )
 
         if (true_objective := info.get("true_objective", self.last_episode_reward)) is not None:
@@ -425,9 +403,12 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
         self.training_info: List[Optional[Dict]] = training_info
 
         self.hierarchical = self.cfg.hierarchical_rl
-        self.meta_controller = MetaController()
+        if self.hierarchical:
+            self.meta_controller = [MetaController(cfg, env_info) for _ in range(num_envs)]
+        else:
+            self.meta_controller = None
 
-        self.rollout_step = [0 for _ in range(self.num_agents)]
+        self.rollout_step = [[0 for _ in range(self.num_agents)] for _ in range(self.num_envs)]
 
         if self.hierarchical:
             self.policy_mgr = MultiAgentPolicyMapping(self.cfg, self.env_info)
@@ -552,10 +533,10 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
 
                     # save policy ouputs to meta controller.
                     if self.hierarchical:
-                        self.meta_controller.set_policy_outputs(agent_i, policy_outputs_dict)
+                        self.meta_controller[env_i].set_policy_outputs(agent_i, policy_outputs_dict)
 
                     # save parsed trajectory outputs directly into the trajectory buffer
-                    actor_state.set_trajectory_data(policy_outputs_dict, self.rollout_step[agent_i])
+                    actor_state.set_trajectory_data(policy_outputs_dict, self.rollout_step[env_i][agent_i])
                     actor_state.last_actions = policy_outputs_dict["actions"].squeeze()
 
                     # this is an rnn state for the next iteration in the rollout
@@ -600,35 +581,51 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
 
         rewards = self._process_rewards(rewards, env_i)
 
+        any_terminated = any(terminated) or any(truncated)
+
         for agent_i in range(self.num_agents):
             actor_state = env_actor_states[agent_i]
+            add1 = False
+            add2 = False
 
-            episode_report = actor_state.record_env_step(
-                rewards[agent_i],
-                terminated[agent_i],
-                truncated[agent_i],
-                infos[agent_i],
-                self.rollout_step[agent_i],
-            )
+            if infos[agent_i].get("actual_acting", True) or agent_i == 0:
 
-            actor_state.last_obs = new_obs[agent_i]
-            actor_state.update_rnn_state(terminated[agent_i] | truncated[agent_i])
+                episode_report = actor_state.record_env_step(
+                    rewards[agent_i],
+                    terminated[agent_i],
+                    truncated[agent_i],
+                    infos[agent_i],
+                    self.rollout_step[env_i][agent_i],
+                )
 
-            if episode_report:
-                episodic_stats.append(episode_report)
+                self.rollout_step[env_i][agent_i] += 1
+
+                actor_state.last_obs = new_obs[agent_i]
+                actor_state.update_rnn_state(terminated[agent_i] | truncated[agent_i])
+
+                if episode_report:
+                    episodic_stats.append(episode_report)
+                    add1 = True
+
+            if any_terminated:
+                episode_report = actor_state.set_terminated(infos[agent_i], self.rollout_step[env_i][agent_i] - 1)
+                if episode_report:
+                    episodic_stats.append(episode_report)
+                    add2 = True
+
+            assert not (add1 and add2)
 
         return episodic_stats
 
-    def _finalize_trajectories(self, agent_i: int) -> List[Dict[str, Any]]:
+    def _finalize_trajectories(self, env_i: int, agent_i: int) -> List[Dict[str, Any]]:
         """
         Do some postprocessing when we're done with the rollout.
         """
 
         rollouts = []
-        for env_i in range(self.num_envs):
-            actor = self.actor_states[env_i][agent_i]
-            rollouts.extend(actor.finalize_trajectory(self.rollout_step[agent_i]))
-            self.need_trajectory_buffers += int(actor.needs_buffer)
+        actor = self.actor_states[env_i][agent_i]
+        rollouts.extend(actor.finalize_trajectory(self.rollout_step[agent_i]))
+        self.need_trajectory_buffers += int(actor.needs_buffer)
 
         return rollouts
 
@@ -652,7 +649,7 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
                     policy_id = actor_state.curr_policy_id
 
                     # where policy worker should look for the policy inputs for the next step
-                    data = (env_i, agent_i, actor_state.curr_traj_buffer_idx, self.rollout_step[agent_i])
+                    data = (env_i, agent_i, actor_state.curr_traj_buffer_idx, self.rollout_step[env_i][agent_i])
 
                     if policy_id not in policy_request:
                         policy_request[policy_id] = []
@@ -679,7 +676,7 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
 
                     # populate policy inputs in shared memory
                     policy_inputs = dict(obs=actor_state.last_obs, rnn_states=actor_state.last_rnn_state)
-                    actor_state.set_trajectory_data(policy_inputs, self.rollout_step[agent_i])
+                    actor_state.set_trajectory_data(policy_inputs, self.rollout_step[env_i][agent_i])
                 else:
                     actor_state.ready = True
 
@@ -704,23 +701,21 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
             with timing.add_time("env_step"):
                 actions = [s.curr_actions() for s in self.actor_states[env_i]]
                 if self.hierarchical:
-                    actions = self.meta_controller.process_actions(actions)
+                    actions = self.meta_controller[env_i].process_actions(actions)
                 new_obs, rewards, terminated, truncated, infos = e.step(actions)
                 if self.hierarchical:
-                    infos = self.meta_controller.process_infos(infos)
+                    infos = self.meta_controller[env_i].process_infos(infos, any(terminated) or any(truncated))
 
             with timing.add_time("overhead"):
                 stats = self._process_env_step(new_obs, rewards, terminated, truncated, infos, env_i)
                 episodic_stats.extend(stats)
 
-        for agent_i in range(self.num_agents):
-            if infos[agent_i].get("actual_acting", True):
-                self.rollout_step[agent_i] += 1
-            if self.rollout_step[agent_i] == self.cfg.rollout:
-                # finalize and serialize the trajectory if we have a complete rollout
-                complete_rollouts.extend(self._finalize_trajectories(agent_i))
-                # print("complete_rollouts", len(complete_rollouts), self.cfg.rollout, self.rollout_step)
-                self.rollout_step[agent_i] = 0
+            for agent_i in range(self.num_agents):
+                if self.rollout_step[env_i][agent_i] == self.cfg.rollout:
+                    # finalize and serialize the trajectory if we have a complete rollout
+                    complete_rollouts.extend(self._finalize_trajectories(env_i, agent_i))
+                    # print("complete_rollouts", len(complete_rollouts), self.cfg.rollout, self.rollout_step)
+                    self.rollout_step[env_i][agent_i] = 0
 
         self.env_step_ready = True
         return complete_rollouts, episodic_stats

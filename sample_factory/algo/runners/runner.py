@@ -439,8 +439,8 @@ class Runner(EventLoopObject, Configurable):
                         max_tag = f"policy_stats/avg_{key}_max"
 
                     if key in ("reward", "true_objective"):
-                        for i in range(self.env_info.num_rewards):
-                            writer.add_scalar(avg_tag + (f"_{i}" if i > 0 else ""), float(np.mean([s[i] for s in stat[policy_id]])), env_steps)
+                        for i, name in enumerate(self.env_info.reward_labels):
+                            writer.add_scalar(avg_tag + f"_{name}", float(np.mean([s[i] for s in stat[policy_id]])), env_steps)
                     else:
                         writer.add_scalar(avg_tag, float(stat_value), env_steps)
 
@@ -449,10 +449,10 @@ class Runner(EventLoopObject, Configurable):
                         writer.add_scalar(min_tag, float(min(stat[policy_id])), env_steps)
                         writer.add_scalar(max_tag, float(max(stat[policy_id])), env_steps)
                     if key in ("reward", "true_objective"):
-                        for i in range(self.env_info.num_rewards):
+                        for i, name in enumerate(self.env_info.reward_labels):
                             # print(stat[policy_id])
-                            writer.add_scalar(min_tag + (f"_{i}" if i > 0 else ""), float(min([s[i] for s in stat[policy_id]])), env_steps)
-                            writer.add_scalar(max_tag + (f"_{i}" if i > 0 else ""), float(max([s[i] for s in stat[policy_id]])), env_steps)
+                            writer.add_scalar(min_tag + f"_{name}", float(min([s[i] for s in stat[policy_id]])), env_steps)
+                            writer.add_scalar(max_tag + f"_{name}", float(max([s[i] for s in stat[policy_id]])), env_steps)
 
             self._observers_call(AlgoObserver.extra_summaries, self, policy_id, writer, env_steps)
 

@@ -67,6 +67,12 @@ def add_rl_args(p: ArgumentParser):
         help="lagrangian."
     )
     p.add_argument(
+        "--suppression",
+        default=False,
+        type=str2bool,
+        help="suppression."
+    )
+    p.add_argument(
         "--hierarchical_rl",
         default=False,
         type=str2bool,

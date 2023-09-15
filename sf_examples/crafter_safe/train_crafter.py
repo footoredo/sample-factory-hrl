@@ -47,6 +47,7 @@ from sample_factory.train import run_rl
 from sample_factory.model.encoder import Encoder
 from sample_factory.model.model_utils import nonlinearity
 from sample_factory.utils.typing import Config, ObsSpace
+from sample_factory.algo.utils.hierarchical_utils import RecoveryRLEnv
 
 from crafter.env import Env as CrafterEnv
 
@@ -104,8 +105,6 @@ class CustomEnv(gym.Env, TrainingInfoInterface, RewardShapingInterface):
         env = ImageToPyTorch(env)
         self.env = env
 
-        self.num_rewards = 3
-
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
 
@@ -121,6 +120,26 @@ class CustomEnv(gym.Env, TrainingInfoInterface, RewardShapingInterface):
         if 'health_lost_count' in training_info['policy_avg_stats']:
             self.avg_health_lost_count = training_info['policy_avg_stats']['health_lost_count']
             # print('avg_health_lost_count', self.avg_health_lost_count, np.log(self.avg_health_lost_count + 1))
+
+    @property
+    def reward_labels(self):
+        return ["achievement", "lost_health", "killed_monster", "lost_health_reward"]
+    
+    @property
+    def reward_weights(self):
+        return [[0.5, 0., 1., 0.], [0., 0., 0., 1.]]
+    
+    @property
+    def recovery_weights(self):
+        return [[0., 1., 0., 0.]]
+    
+    @property
+    def suppression_weights(self):
+        return [[0., 1., 0., 0.,], [0., 1., 0., 0.]]
+    
+    @property
+    def num_rewards(self):
+        return 4
 
     def reset(self, **kwargs):
         self.health_lost_count = 0
@@ -154,7 +173,7 @@ class CustomEnv(gym.Env, TrainingInfoInterface, RewardShapingInterface):
             self.episode_reward = 0
             self.pen += 0.02 * (self.avg_health_lost_count - 1)
             self.pen = min(max(self.pen, 0), 5)
-        return obs, np.array([reward, lost_health, -killed_monster], dtype=np.float32), terminated, truncated, info
+        return obs, np.array([reward, lost_health, killed_monster, -lost_health], dtype=np.float32), terminated, truncated, info
 
     def render(self):
         return self.env.render()
@@ -205,7 +224,9 @@ def make_custom_encoder(cfg: Config, obs_space: ObsSpace) -> Encoder:
 
 def make_custom_env_func(full_env_name, cfg=None, env_config=None, render_mode: Optional[str] = None):
     # print(env_config)
-    return CustomEnv(full_env_name, cfg, env_config, render_mode=render_mode)
+    env = CustomEnv(full_env_name, cfg, env_config, render_mode=render_mode)
+    env = RecoveryRLEnv(env)
+    return env
 
 def register_custom_components():
     register_env("crafter", make_custom_env_func)

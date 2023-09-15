@@ -158,6 +158,10 @@ class BatchedVecEnv(Wrapper[DictOfTensorObservations, TensorActions]):
             env = BatchedListToDictWrapper(env)
 
         self.num_rewards = env.num_rewards
+        self.reward_labels = env.reward_labels
+        self.reward_weights = env.reward_weights
+        self.recovery_weights = env.recovery_weights
+        self.suppression_weights = env.suppression_weights
 
         is_multiagent, num_agents = get_multiagent_info(env)
         self.is_multiagent: bool = is_multiagent
@@ -363,6 +367,10 @@ class NonBatchedVecEnv(Wrapper[ListObservations, ListActions]):
             env = NonBatchedDictObservationsWrapper(env)
 
         self.num_rewards = env.num_rewards
+        self.reward_labels = env.reward_labels
+        self.reward_weights = env.reward_weights
+        self.recovery_weights = env.recovery_weights
+        self.suppression_weights = env.suppression_weights
 
         is_multiagent, num_agents = get_multiagent_info(env)
         self.is_multiagent: bool = is_multiagent

@@ -176,6 +176,9 @@ class Learner(Configurable):
         self.kl_loss_func: Optional[Callable] = None
 
         self.use_lagrangian = self.cfg.lagrangian
+        self.use_suppression = self.cfg.suppression and self.env_info.suppression_weights is not None
+        self.suppression_weights = None
+        self.reward_weights = None
 
         self.lag = None
         self.violations = None
@@ -257,13 +260,21 @@ class Learner(Configurable):
         self._apply_lr(self.curr_lr)
 
         if self.use_lagrangian:
-            self.lag = torch.zeros((5,), dtype=torch.float32, device=self.device)
-            self.violations = torch.zeros((5,), dtype=torch.float32, device=self.device)
+            self.lag = torch.zeros((3,), dtype=torch.float32, device=self.device)
+            self.violations = torch.zeros((3,), dtype=torch.float32, device=self.device)
             # self.constraint_limits = torch.tensor([1000, 500, np.inf, 10, np.inf], dtype=torch.float32, device=self.device)
-            self.constraint_limits = torch.tensor([np.inf, np.inf, np.inf, np.inf, np.inf], dtype=torch.float32, device=self.device)
-            self.constraint_scales = torch.tensor([1e-3, 1e-3, 1, 0.1, 1], dtype=torch.float32, device=self.device)
+            # self.constraint_limits = torch.tensor([np.inf, 50, np.inf], dtype=torch.float32, device=self.device)
+            self.constraint_limits = torch.tensor([np.inf, np.inf, np.inf], dtype=torch.float32, device=self.device)
+            self.constraint_scales = torch.tensor([1e-3, 0.02, 1], dtype=torch.float32, device=self.device)
             # self.constraint_limits = torch.tensor([2.5, -1], dtype=torch.float32, device=self.device)
             # self.constraint_scales = torch.tensor([0.1, 1], dtype=torch.float32, device=self.device)
+
+        if self.use_suppression:
+            self.suppression_weights = torch.tensor(self.env_info.suppression_weights[self.policy_id], dtype=torch.float32, device=self.device)
+        else:
+            self.suppression_weights = None
+
+        self.reward_weights = torch.tensor(self.env_info.reward_weights[self.policy_id], dtype=torch.float32, device=self.device)
 
         self.is_initialized = True
 
@@ -440,7 +451,7 @@ class Learner(Configurable):
             self.policy_to_load = None
 
     @staticmethod
-    def _policy_loss(ratio, adv, clip_ratio_low, clip_ratio_high, valids, num_invalids: int, use_lag, lag):
+    def _policy_loss(ratio, adv, clip_ratio_low, clip_ratio_high, valids, num_invalids: int, rew_weights, use_lag, lag, use_supp, supp_weights, denormed_values):
         clipped_ratio = torch.clamp(ratio, clip_ratio_low, clip_ratio_high)
         if use_lag:
             # print("adv", adv.shape, "lag", lag.shape)
@@ -453,8 +464,15 @@ class Learner(Configurable):
             # print(soft_lag)
             _adv = adv[..., 0] * soft_lag[..., 0] - (adv[..., 1:] * soft_lag[..., 1:]).sum(-1)
             # _adv = adv[..., 0]
+        elif use_supp:
+            # _adv = adv[..., 0]
+            supp_gate = (denormed_values * supp_weights[None]).sum(-1)
+            supp_gate = torch.clamp(supp_gate, 0, 1)
+            # _adv = (adv * rew_weights[None]).sum(-1) * (1 - supp_gate) - supp_gate * 0
+            # _adv = (adv * rew_weights[None]).sum(-1) * (1 - supp_gate * 0.8) + supp_gate * adv[..., 3] * 3
+            _adv = (adv * rew_weights[None]).sum(-1) + supp_gate * adv[..., 3] * 3
         else:
-            _adv = adv[..., 0]
+            _adv = (adv * rew_weights[None]).sum(-1)
         loss_unclipped = ratio * _adv
         loss_clipped = clipped_ratio * _adv
         loss = torch.min(loss_unclipped, loss_clipped)
@@ -674,7 +692,8 @@ class Learner(Configurable):
 
         with self.timing.add_time("losses"):
             # noinspection PyTypeChecker
-            policy_loss = self._policy_loss(ratio, adv, clip_ratio_low, clip_ratio_high, valids, num_invalids, self.use_lagrangian, self.lag)
+            policy_loss = self._policy_loss(ratio, adv, clip_ratio_low, clip_ratio_high, valids, num_invalids, self.reward_weights, 
+                                            self.use_lagrangian, self.lag, self.use_suppression, self.suppression_weights, mb.denormalized_values)
             exploration_loss = self.exploration_loss_func(action_distribution, valids, num_invalids)
             kl_old, kl_loss = self.kl_loss_func(
                 self.actor_critic.action_space, mb.action_logits, action_distribution, valids, num_invalids
@@ -888,6 +907,7 @@ class Learner(Configurable):
         var = train_loop_vars
 
         num_rewards = self.env_info.num_rewards
+        reward_labels = self.env_info.reward_labels
 
         self.last_summary_time = time.time()
         stats = AttrDict()
@@ -905,8 +925,8 @@ class Learner(Configurable):
         )
         stats.grad_norm = grad_norm
         stats.loss = var.loss
-        for i in range(num_rewards):
-            stats[f"value_{i}"] = var.values[..., i].mean()
+        for i, name in enumerate(reward_labels):
+            stats[f"value_{name}"] = var.values[..., i].mean()
         stats.entropy = var.action_distribution.entropy().mean()
         stats.policy_loss = var.policy_loss
         stats.kl_loss = var.kl_loss
@@ -916,11 +936,11 @@ class Learner(Configurable):
         stats.act_min = var.mb.actions.min()
         stats.act_max = var.mb.actions.max()
 
-        for i in range(num_rewards):
-            stats[f"adv_min_{i}"] = var.mb.advantages[..., i].min()
-            stats[f"adv_max_{i}"] = var.mb.advantages[..., i].max()
-            stats[f"adv_std_{i}"] = var.adv_std[i]
-            stats[f"adv_mean_{i}"] = var.adv_mean[i]
+        for i, name in enumerate(reward_labels):
+            stats[f"adv_min_{name}"] = var.mb.advantages[..., i].min()
+            stats[f"adv_max_{name}"] = var.mb.advantages[..., i].max()
+            stats[f"adv_std_{name}"] = var.adv_std[i]
+            stats[f"adv_mean_{name}"] = var.adv_mean[i]
         stats.max_abs_logprob = torch.abs(var.mb.action_logits).max()
 
         if hasattr(var.action_distribution, "summaries"):
@@ -966,10 +986,10 @@ class Learner(Configurable):
 
         if self.use_lagrangian:
             soft_lag = F.softmax(self.lag, 0)
-            for i in range(self.lag.shape[0]):
-                stats[f"lag_{i}"] = self.lag[i]
-                stats[f"soft_lag_{i}"] = soft_lag[i]
-                stats[f"violations_{i}"] = self.violations[i]
+            for i, name in enumerate(reward_labels):
+                stats[f"lag_{name}"] = self.lag[i]
+                stats[f"soft_lag_{name}"] = soft_lag[i]
+                stats[f"violations_{name}"] = self.violations[i]
             # stats.main_lag = self.lag[0]
             # stats.main_soft_lag = soft_lag[0]
             # stats.main_violation = self.violations[0]

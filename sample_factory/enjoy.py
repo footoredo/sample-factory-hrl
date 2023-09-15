@@ -17,6 +17,7 @@ from sample_factory.algo.utils.make_env import make_env_func_batched
 from sample_factory.algo.utils.misc import ExperimentStatus
 from sample_factory.algo.utils.rl_utils import make_dones, prepare_and_normalize_obs
 from sample_factory.algo.utils.tensor_utils import unsqueeze_tensor
+from sample_factory.algo.utils.hierarchical_utils import MetaController
 from sample_factory.cfg.arguments import load_from_checkpoint
 from sample_factory.huggingface.huggingface_utils import generate_model_card, generate_replay_video, push_to_hf
 from sample_factory.model.actor_critic import create_actor_critic
@@ -109,6 +110,8 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
 
     cfg = load_from_checkpoint(cfg)
 
+    hierarchical = cfg.hierarchical_rl
+
     eval_env_frameskip: int = cfg.env_frameskip if cfg.eval_env_frameskip is None else cfg.eval_env_frameskip
     assert (
         cfg.env_frameskip % eval_env_frameskip == 0
@@ -129,6 +132,11 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
         cfg, env_config=AttrDict(worker_index=0, vector_index=0, env_id=0), render_mode=render_mode
     )
     env_info = extract_env_info(env, cfg)
+
+    if hierarchical:
+        meta_controller = MetaController(cfg, env_info)
+    else:
+        meta_controller = None
 
     if hasattr(env.unwrapped, "reset_on_init"):
         # reset call ruins the demo recording for VizDoom
@@ -151,7 +159,9 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
     num_frames = 0
 
     episode_datas = [[] for _ in range(env.num_agents)]
-    episode_data = [dict(obs=[], normalized_obs=[], actions=[], values=[], rewards=[], terminated=[], truncated=[], infos=[]) for _ in range(env.num_agents)]
+    episode_data = [dict(obs=[], normalized_obs=[], actions=[], values=[], original_actions=[],
+                         denormed_values=[], rewards=[], terminated=[], truncated=[], 
+                         infos=[], acting_agent=[]) for _ in range(env.num_agents)]
 
     last_render_start = time.time()
 
@@ -180,9 +190,14 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
                 visualize_policy_inputs(normalized_obs)
             policy_outputs = actor_critic(normalized_obs, rnn_states)
 
+            if hierarchical:
+                for agent_i in range(env.num_agents):
+                    meta_controller.set_policy_outputs(agent_i, {key: value[agent_i] for key, value in policy_outputs.items()})
+
             # sample actions from the distribution by default
             actions = policy_outputs["actions"]
             values = policy_outputs["values"]
+            denormed_values = policy_outputs["denormalized_values"]
 
             if cfg.eval_deterministic:
                 action_distribution = actor_critic.action_distribution()
@@ -193,6 +208,11 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
                 actions = unsqueeze_tensor(actions, dim=-1)
             actions = preprocess_actions(env_info, actions)
 
+            if hierarchical:
+                for i in range(env.num_agents):
+                    episode_data[i]["original_actions"].append(recursive_copy(actions[i]))
+                actions = meta_controller.process_actions(actions)
+
             rnn_states = policy_outputs["new_rnn_states"]
 
             for _ in range(render_action_repeat):
@@ -202,6 +222,8 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
                     episode_data[i]["normalized_obs"].append(recursive_copy(get_agent_obs(normalized_obs, i)))
                     episode_data[i]["actions"].append(recursive_copy(actions[i]))
                     episode_data[i]["values"].append(recursive_copy(values[i]))
+                    episode_data[i]["denormed_values"].append(recursive_copy(denormed_values[i]))
+                    episode_data[i]['acting_agent'].append(meta_controller.policy_idx)
 
                 obs, rew, terminated, truncated, infos = env.step(actions)
                 dones = make_dones(terminated, truncated)
