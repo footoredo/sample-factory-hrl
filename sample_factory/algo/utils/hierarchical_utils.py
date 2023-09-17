@@ -35,6 +35,19 @@ ListObservations = Sequence[Any]
 ListOfDictObservations = Sequence[DictObservations]
 
 
+def recursive_copy(data):
+    if isinstance(data, np.ndarray):
+        return data.copy()
+    elif isinstance(data, torch.Tensor):
+        return data.detach().cpu().numpy().copy()
+    elif type(data) is list:
+        return [recursive_copy(x) for x in data]
+    elif type(data) is dict:
+        return {key: recursive_copy(value) for key, value in data.items()}
+    else:
+        return data
+
+
 class RecoveryRLEnv(Wrapper):
     def __init__(self, env):
         super().__init__(env)
@@ -44,7 +57,7 @@ class RecoveryRLEnv(Wrapper):
         self.is_multiagent = True
 
     def _replicate(self, item):
-        return [copy.deepcopy(item) for _ in range(self.num_agents)]
+        return [recursive_copy(item) for _ in range(self.num_agents)]
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
@@ -54,8 +67,8 @@ class RecoveryRLEnv(Wrapper):
         # assume action[0] is the actual action.
         _obs, _reward, _terminated, _truncated, _info = self.env.step(actions[0])
         if _terminated or _truncated:
-            _obs, _info = self.env.reset()
-        return self._replicate(_obs), [_reward, _reward], self._replicate(_terminated), \
+            _obs, _ = self.env.reset()
+        return self._replicate(_obs), self._replicate(_reward), self._replicate(_terminated), \
             self._replicate(_truncated), self._replicate(_info)
 
 
@@ -76,31 +89,37 @@ class MetaController:
 
         self.policy_idx = None
 
+        self.selected = False
+
     def _select_policy(self):
         if all(self.ready):
             denormed_values = self.policy_outputs[0]["denormalized_values"]
-            if isinstance(denormed_values, torch.Tensor):
-                denormed_values = denormed_values.detach().cpu().numpy()
+            # if isinstance(denormed_values, torch.Tensor):
+            #     denormed_values = denormed_values.detach().cpu().numpy()
             safety = np.dot(self.recovery_weights, denormed_values)
             if safety > 0.5:
             # if safety > 1e9:
+            # if safety * 100 % 1 > 0.95:
                 self.policy_idx = 1
             else:
                 self.policy_idx = 0
             for i in range(self.num_agents):
                 self.ready[i] = False
+            self.selected = True
 
     def set_observation(self, observation):
         self.last_observation = observation
 
     def set_policy_outputs(self, policy_idx, policy_outputs):
-        self.policy_outputs[policy_idx] = policy_outputs
+        self.policy_outputs[policy_idx] = recursive_copy(policy_outputs)
         # print(policy_outputs, policy_idx)
         self.ready[policy_idx] = True
         self._select_policy()
 
     def process_actions(self, actions):
-        return [actions[self.policy_idx]] * len(actions)
+        assert self.selected
+        self.selected = False
+        return [recursive_copy(actions[self.policy_idx])] * len(actions)
     
     def process_infos(self, infos, done):
         self.episode_length += 1

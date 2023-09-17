@@ -440,6 +440,8 @@ class Runner(EventLoopObject, Configurable):
 
                     if key in ("reward", "true_objective"):
                         for i, name in enumerate(self.env_info.reward_labels):
+                            # if key == "reward":
+                            #     print(name, list(stat[policy_id])[-5:])
                             writer.add_scalar(avg_tag + f"_{name}", float(np.mean([s[i] for s in stat[policy_id]])), env_steps)
                     else:
                         writer.add_scalar(avg_tag, float(stat_value), env_steps)

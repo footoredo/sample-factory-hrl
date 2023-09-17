@@ -105,6 +105,10 @@ def get_agent_obs(obs, agent_i):
         return obs[agent_i]
 
 
+def get_stacked(inpt, key):
+    return torch.stack([_inpt[key] for _inpt in inpt], 0)
+
+
 def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
     verbose = False
 
@@ -142,17 +146,19 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
         # reset call ruins the demo recording for VizDoom
         env.unwrapped.reset_on_init = False
 
-    actor_critic = create_actor_critic(cfg, env.observation_space, env.action_space, env.num_rewards)
-    actor_critic.eval()
-
     device = torch.device("cpu" if cfg.device == "cpu" else "cuda")
-    actor_critic.model_to_device(device)
 
-    policy_id = cfg.policy_index
-    name_prefix = dict(latest="checkpoint", best="best")[cfg.load_checkpoint_kind]
-    checkpoints = Learner.get_checkpoints(Learner.checkpoint_dir(cfg, policy_id), f"{name_prefix}_*")
-    checkpoint_dict = Learner.load_checkpoint(checkpoints, device)
-    actor_critic.load_state_dict(checkpoint_dict["model"])
+    actor_critics = []
+
+    for agent_i in range(env.num_agents):
+        actor_critic = create_actor_critic(cfg, env.observation_space, env.action_space, env.num_rewards)
+        actor_critic.eval()
+        actor_critic.model_to_device(device)
+        name_prefix = dict(latest="checkpoint", best="best")[cfg.load_checkpoint_kind]
+        checkpoints = Learner.get_checkpoints(Learner.checkpoint_dir(cfg, agent_i), f"{name_prefix}_*")
+        checkpoint_dict = Learner.load_checkpoint(checkpoints, device)
+        actor_critic.load_state_dict(checkpoint_dict["model"])
+        actor_critics.append(actor_critic)
 
     episode_rewards = [deque([], maxlen=100) for _ in range(env.num_agents)]
     true_objectives = [deque([], maxlen=100) for _ in range(env.num_agents)]
@@ -161,7 +167,7 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
     episode_datas = [[] for _ in range(env.num_agents)]
     episode_data = [dict(obs=[], normalized_obs=[], actions=[], values=[], original_actions=[],
                          denormed_values=[], rewards=[], terminated=[], truncated=[], 
-                         infos=[], acting_agent=[]) for _ in range(env.num_agents)]
+                         infos=[], actual_acting=[]) for _ in range(env.num_agents)]
 
     last_render_start = time.time()
 
@@ -184,24 +190,29 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
 
     with torch.no_grad():
         while not max_frames_reached(num_frames):
-            normalized_obs = prepare_and_normalize_obs(actor_critic, obs)
+            normalized_obss = [prepare_and_normalize_obs(actor_critic, obs) for i, actor_critic in enumerate(actor_critics)]
+            normalized_obss = [{key: value[i: i + 1] for key, value in normalized_obs.items()} for normalized_obs in normalized_obss]
 
             if not cfg.no_render:
-                visualize_policy_inputs(normalized_obs)
-            policy_outputs = actor_critic(normalized_obs, rnn_states)
+                visualize_policy_inputs(normalized_obss[0])
+
+            policy_outputs = [actor_critic(normalized_obs, rnn_states) for actor_critic, normalized_obs in zip(actor_critics, normalized_obss)]
+            for agent_i in range(env.num_agents):
+                policy_outputs[agent_i] = { key: value[0] for key, value in policy_outputs[agent_i].items() }
 
             if hierarchical:
                 for agent_i in range(env.num_agents):
-                    meta_controller.set_policy_outputs(agent_i, {key: value[agent_i] for key, value in policy_outputs.items()})
+                    meta_controller.set_policy_outputs(agent_i, policy_outputs[agent_i])
 
             # sample actions from the distribution by default
-            actions = policy_outputs["actions"]
-            values = policy_outputs["values"]
-            denormed_values = policy_outputs["denormalized_values"]
+            actions = get_stacked(policy_outputs, "actions")
+            values = get_stacked(policy_outputs, "values")
+            denormed_values = get_stacked(policy_outputs, "denormalized_values")
 
             if cfg.eval_deterministic:
-                action_distribution = actor_critic.action_distribution()
-                actions = argmax_actions(action_distribution)
+                action_distributions = [actor_critic.action_distribution() for actor_critic in actor_critics]
+                actions = [argmax_actions(action_distribution) for action_distribution in action_distributions]
+                actions = np.stack(actions, 0)
 
             # actions shape should be [num_agents, num_actions] even if it's [1, 1]
             if actions.ndim == 1:
@@ -213,17 +224,17 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
                     episode_data[i]["original_actions"].append(recursive_copy(actions[i]))
                 actions = meta_controller.process_actions(actions)
 
-            rnn_states = policy_outputs["new_rnn_states"]
+            rnn_states = get_stacked(policy_outputs, "new_rnn_states")
 
             for _ in range(render_action_repeat):
                 last_render_start = render_frame(cfg, env, video_frames, num_episodes, last_render_start)
 
                 for i in range(env.num_agents):
-                    episode_data[i]["normalized_obs"].append(recursive_copy(get_agent_obs(normalized_obs, i)))
+                    episode_data[i]["normalized_obs"].append(recursive_copy(normalized_obss[i]))
                     episode_data[i]["actions"].append(recursive_copy(actions[i]))
                     episode_data[i]["values"].append(recursive_copy(values[i]))
                     episode_data[i]["denormed_values"].append(recursive_copy(denormed_values[i]))
-                    episode_data[i]['acting_agent'].append(meta_controller.policy_idx)
+                    episode_data[i]['actual_acting'].append(meta_controller.policy_idx == i)
 
                 obs, rew, terminated, truncated, infos = env.step(actions)
                 dones = make_dones(terminated, truncated)
@@ -305,11 +316,11 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
                     log.info(
                         "Avg episode rewards: %s, true rewards: %s", avg_episode_rewards_str, avg_true_objective_str
                     )
-                    log.info(
-                        "Avg episode reward: %s, avg true_objective: %s",
-                        f"{np.mean([np.mean(episode_rewards[i], 0) for i in range(env.num_agents)])}",
-                        f"{np.mean([np.mean(true_objectives[i], 0) for i in range(env.num_agents)])}",
-                    )
+                    # log.info(
+                    #     "Avg episode reward: %s, avg true_objective: %s",
+                    #     f"{np.mean([np.mean(episode_rewards[i], 0) for i in range(env.num_agents)])}",
+                    #     f"{np.mean([np.mean(true_objectives[i], 0) for i in range(env.num_agents)])}",
+                    # )
 
                 # VizDoom multiplayer stuff
                 # for player in [1, 2, 3, 4, 5, 6, 7, 8]:
@@ -321,6 +332,22 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
                 break
 
     env.close()
+
+    for agent_i in range(env.num_agents):
+        acting_freqs = []
+        episode_lens = []
+        for episode_i in range(len(episode_datas[agent_i])):
+            episode_len = len(episode_datas[agent_i][episode_i]['actual_acting'])
+            episode_lens.append(episode_len)
+            if episode_len > 0:
+                total_actings = sum(episode_datas[agent_i][episode_i]['actual_acting'])
+                acting_freqs.append(total_actings / episode_len)
+        log.info(f"agent #{agent_i} acting frequency: {np.mean(acting_freqs)} episode lens: {np.mean(episode_lens)}")
+        print(acting_freqs)
+
+    for agent_i in range(env.num_agents):
+        for episode_i in range(len(episode_rewards[agent_i])):
+            log.info(f"agent #{agent_i} episode #{episode_i}: {episode_rewards[agent_i][episode_i]}")
 
     episode_data_path = os.path.join(experiment_dir(cfg=cfg), "episode_data.joblib")
     joblib.dump(episode_datas, episode_data_path)

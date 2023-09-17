@@ -88,7 +88,7 @@ class ActorState:
 
         self.num_trajectories = 0
 
-        self.last_episode_reward = 0
+        self.last_episode_reward = np.zeros(self.env_info.num_rewards, dtype=np.float32)
         self.last_episode_duration = 0
         self.last_episode_length = 0
         self.last_episode_actual_acting = 0
@@ -175,7 +175,7 @@ class ActorState:
 
         return actions
 
-    def record_env_step(self, reward, terminated: bool, truncated: bool, info, rollout_step):
+    def record_env_step(self, reward: np.ndarray, terminated: bool, truncated: bool, info, rollout_step):
         """
         Policy inputs (obs) and policy outputs (actions, values, ...) for the current rollout step
         are already added to the trajectory buffer
@@ -191,7 +191,7 @@ class ActorState:
 
         done = terminated | truncated
 
-        self.curr_traj_buffer["rewards"][rollout_step] = reward
+        self.curr_traj_buffer["rewards"][rollout_step] = reward.copy()
         self.curr_traj_buffer["dones"][rollout_step] = done
         self.curr_traj_buffer["time_outs"][rollout_step] = truncated
 
@@ -232,7 +232,7 @@ class ActorState:
         if new_policy_id != self.curr_policy_id:
             self._on_new_policy(new_policy_id)
 
-        self.last_episode_reward = self.last_episode_duration = 0.0
+        self.last_episode_reward[:] = self.last_episode_duration = 0.0
         self.last_episode_actual_acting = self.last_episode_length = 0
 
         return report
@@ -326,14 +326,17 @@ class ActorState:
         if self.last_episode_length == 0:
             return None
         
+        # print(info['episode_reward'], info['actual_episode_length'])
+        
         stats = dict(
-            reward=self.last_episode_reward,
+            reward=self.last_episode_reward.copy(),
+            # reward=info.get('episode_reward', self.last_episode_reward.copy()),
             len=self.last_episode_duration,
             episode_extra_stats=info.get("episode_extra_stats", dict()),
-            act_ratio=self.last_episode_actual_acting / info.get("actual_episode_length", self.last_episode_length)
+            act_ratio=self.last_episode_actual_acting / info.get("actual_episode_length", self.last_episode_length),
         )
 
-        if (true_objective := info.get("true_objective", self.last_episode_reward)) is not None:
+        if (true_objective := info.get("true_objective", self.last_episode_reward.copy())) is not None:
             stats["true_objective"] = true_objective
 
         episode_wrapper_stats = record_episode_statistics_wrapper_stats(info)
@@ -551,16 +554,15 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
         # a simulation step right away, without waiting for all other actions to be calculated.
         return all_actors_ready
 
-    def _process_rewards(self, rewards, env_i: int):
+    def _process_rewards(self, rewards, infos, env_i: int):
         """
         Pretty self-explanatory, here we record the episode reward and apply the optional clipping and
         scaling of rewards.
         """
 
-        # print(len(rewards), rewards[0].shape)
-
         for agent_i, r in enumerate(rewards):
-            self.actor_states[env_i][agent_i].last_episode_reward += r
+            if infos[agent_i].get("actual_acting", True) or agent_i == 0:
+                self.actor_states[env_i][agent_i].last_episode_reward += r
 
         rewards = np.asarray(rewards, dtype=np.float32)
         rewards = rewards * self.cfg.reward_scale
@@ -579,7 +581,7 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
         episodic_stats = []
         env_actor_states = self.actor_states[env_i]
 
-        rewards = self._process_rewards(rewards, env_i)
+        rewards = self._process_rewards(rewards, infos, env_i)
 
         any_terminated = any(terminated) or any(truncated)
 
@@ -600,14 +602,15 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
 
                 self.rollout_step[env_i][agent_i] += 1
 
-                actor_state.last_obs = new_obs[agent_i]
-                actor_state.update_rnn_state(terminated[agent_i] | truncated[agent_i])
-
                 if episode_report:
                     episodic_stats.append(episode_report)
                     add1 = True
 
+            actor_state.last_obs = new_obs[agent_i]
+            actor_state.update_rnn_state(terminated[agent_i] | truncated[agent_i])
+
             if any_terminated:
+                env_actor_states[agent_i].update_rnn_state(True)
                 episode_report = actor_state.set_terminated(infos[agent_i], self.rollout_step[env_i][agent_i] - 1)
                 if episode_report:
                     episodic_stats.append(episode_report)
@@ -624,7 +627,7 @@ class NonBatchedVectorEnvRunner(VectorEnvRunner):
 
         rollouts = []
         actor = self.actor_states[env_i][agent_i]
-        rollouts.extend(actor.finalize_trajectory(self.rollout_step[agent_i]))
+        rollouts.extend(actor.finalize_trajectory(self.rollout_step[env_i][agent_i]))
         self.need_trajectory_buffers += int(actor.needs_buffer)
 
         return rollouts

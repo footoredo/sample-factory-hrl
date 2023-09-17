@@ -62,6 +62,7 @@ class RecoveryWrapper(gym.Wrapper):
             low=-np.inf, high=np.inf, shape=(obs_shape,), dtype=np.float64
         )
         self.obstacle = None
+        self.episode_reward = None
     
     def _add_obstacle_obs(self, obs, info):
         if self.obstacle is None:
@@ -80,6 +81,11 @@ class RecoveryWrapper(gym.Wrapper):
             info['obstacle_x'] = self.obstacle[0]
             info['obstacle_y'] = self.obstacle[1]
             info['obstacle_distance'] = np.sqrt(np.square(self.obstacle[0] - x_pos) + np.square(self.obstacle[1] - y_pos))
+        return info
+    
+    def _add_info(self, info):
+        info = self._add_obstacle_info(info)
+        info['episode_reward'] = self.episode_reward.copy()
         return info
     
     def _update_obstacle(self, info):
@@ -109,7 +115,8 @@ class RecoveryWrapper(gym.Wrapper):
         obs, info = self.env.reset(**kargs)
         obs[0] = 0  # mask x posistion
         self.obstacle = None
-        return self._add_obstacle_obs(obs, info), self._add_obstacle_info(info)
+        self.episode_reward = np.zeros((self.num_rewards,), dtype=np.float32)
+        return self._add_obstacle_obs(obs, info), self._add_info(info)
     
     @property
     def reward_labels(self):
@@ -155,16 +162,21 @@ class RecoveryWrapper(gym.Wrapper):
         if self.obstacle is None:
             collision_reward = 0.
         else:
-            collision_reward = np.log(max(distance, 0.1) / 5)
-            # collision_reward = np.log(max(distance, 0.1) / 5) - 5 * int(distance <= OBSTACLE_SIZE)
+            # collision_reward = np.log(max(distance, 0.1) / 5)
+            collision_reward = np.log(max(distance, 0.1) / 5) - 5 * int(distance <= OBSTACLE_SIZE)
             # collision_reward = distance - 5 * int(distance <= OBSTACLE_SIZE)
 
         info['collision'] = collision
+        info['is_healthy'] = self.env.is_healthy
         # if collision:
         #     self.obstacle = None
+
+        rew = np.array([info['forward_reward'], collision, y_limit_violation, collision_reward, y_rew])
+        self.episode_reward += rew
+        # print(self.episode_reward)
         
         # return self._add_obstacle_obs(obs), np.array([reward, y_pos < -5 or y_pos > 5, y_rew]), terminated, truncated, self._add_obstacle_info(info)
-        return self._add_obstacle_obs(obs, info), np.array([info['forward_reward'], collision, y_limit_violation, collision_reward, y_rew]), terminated, truncated, self._add_obstacle_info(info)
+        return self._add_obstacle_obs(obs, info), rew, terminated, truncated, self._add_info(info)
 
 
 class DummyWrapper(gym.Wrapper):

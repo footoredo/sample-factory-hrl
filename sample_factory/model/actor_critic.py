@@ -167,7 +167,7 @@ class ActorCriticSharedWeights(ActorCritic):
         values = self.critic_linear(decoder_output)
 
         result = TensorDict(values=values)
-        denormalized_values = values.clone()
+        denormalized_values = values.detach().clone()
         self.returns_normalizer(denormalized_values, denormalize=True)
         result["denormalized_values"] = denormalized_values
         if values_only:
