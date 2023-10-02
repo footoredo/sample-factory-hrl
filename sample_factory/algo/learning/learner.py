@@ -467,10 +467,10 @@ class Learner(Configurable):
         elif use_supp:
             # _adv = adv[..., 0]
             supp_gate = (denormed_values * supp_weights[None]).sum(-1)
-            supp_gate = torch.clamp(supp_gate, 0, 1)
-            # _adv = (adv * rew_weights[None]).sum(-1) * (1 - supp_gate) - supp_gate * 0
-            # _adv = (adv * rew_weights[None]).sum(-1) * (1 - supp_gate * 0.8) + supp_gate * adv[..., 3] * 3
-            _adv = (adv * rew_weights[None]).sum(-1) + supp_gate * adv[..., 3] * 3
+            supp_gate = torch.clamp(supp_gate * 2, 0, 1)
+            # _adv = (adv * rew_weights[None]).sum(-1) * (1 - supp_gate) - supp_gate * 3
+            _adv = (adv * rew_weights[None]).sum(-1) * (1 - supp_gate) + supp_gate * adv[..., 4] * 3
+            # _adv = (adv * rew_weights[None]).sum(-1) + supp_gate * adv[..., 3] * 3
         else:
             _adv = (adv * rew_weights[None]).sum(-1)
         loss_unclipped = ratio * _adv

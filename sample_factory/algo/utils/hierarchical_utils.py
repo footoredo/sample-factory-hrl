@@ -86,6 +86,8 @@ class MetaController:
         self.ready = [False for _ in range(self.num_agents)]
 
         self.episode_length = 0
+        self.exploration_countdown = int(1e5)
+        self.total_steps = 0
 
         self.policy_idx = None
 
@@ -93,10 +95,14 @@ class MetaController:
 
     def _select_policy(self):
         if all(self.ready):
+            self.total_steps += 1
             denormed_values = self.policy_outputs[0]["denormalized_values"]
             # if isinstance(denormed_values, torch.Tensor):
             #     denormed_values = denormed_values.detach().cpu().numpy()
             safety = np.dot(self.recovery_weights, denormed_values)
+            rnd = safety * 100 % 1
+            # if safety > 0.5 or rnd > (0.8 + 0.2 * self.total_steps / self.exploration_countdown):
+            # if safety > 0.5 and self.total_steps > 1e4:
             if safety > 0.5:
             # if safety > 1e9:
             # if safety * 100 % 1 > 0.95:

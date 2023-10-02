@@ -135,6 +135,9 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
     env = make_env_func_batched(
         cfg, env_config=AttrDict(worker_index=0, vector_index=0, env_id=0), render_mode=render_mode
     )
+    env.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    np.random.seed(cfg.seed)
     env_info = extract_env_info(env, cfg)
 
     if hierarchical:
@@ -160,8 +163,8 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
         actor_critic.load_state_dict(checkpoint_dict["model"])
         actor_critics.append(actor_critic)
 
-    episode_rewards = [deque([], maxlen=100) for _ in range(env.num_agents)]
-    true_objectives = [deque([], maxlen=100) for _ in range(env.num_agents)]
+    episode_rewards = [[] for _ in range(env.num_agents)]
+    true_objectives = [[] for _ in range(env.num_agents)]
     num_frames = 0
 
     episode_datas = [[] for _ in range(env.num_agents)]
@@ -181,8 +184,11 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
     episode_reward = None
     finished_episode = [False for _ in range(env.num_agents)]
 
+    save_episode_data = cfg.save_episode_data
+
     for i in range(env.num_agents):
-        episode_data[i]["obs"].append(recursive_copy(get_agent_obs(obs, i)))
+        if save_episode_data:
+            episode_data[i]["obs"].append(recursive_copy(get_agent_obs(obs, i)))
         episode_data[i]["infos"].append(recursive_copy(infos[i]))
 
     video_frames = []
@@ -230,7 +236,8 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
                 last_render_start = render_frame(cfg, env, video_frames, num_episodes, last_render_start)
 
                 for i in range(env.num_agents):
-                    episode_data[i]["normalized_obs"].append(recursive_copy(normalized_obss[i]))
+                    if save_episode_data:
+                        episode_data[i]["normalized_obs"].append(recursive_copy(normalized_obss[i]))
                     episode_data[i]["actions"].append(recursive_copy(actions[i]))
                     episode_data[i]["values"].append(recursive_copy(values[i]))
                     episode_data[i]["denormed_values"].append(recursive_copy(denormed_values[i]))
@@ -241,7 +248,8 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
                 infos = [{} for _ in range(env_info.num_agents)] if infos is None else infos
 
                 for i in range(env.num_agents):
-                    episode_data[i]["obs"].append(recursive_copy(get_agent_obs(obs, i)))
+                    if save_episode_data:
+                        episode_data[i]["obs"].append(recursive_copy(get_agent_obs(obs, i)))
                     episode_data[i]["rewards"].append(recursive_copy(rew[i]))
                     episode_data[i]["terminated"].append(recursive_copy(terminated[i]))
                     episode_data[i]["truncated"].append(recursive_copy(truncated[i]))
@@ -286,10 +294,12 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
                         if cfg.use_record_episode_statistics:
                             # we want the scores from the full episode not a single agent death (due to EpisodicLifeEnv wrapper)
                             if "episode" in infos[agent_i].keys():
-                                num_episodes += 1
+                                if agent_i == 0:
+                                    num_episodes += 1
                                 reward_list.append(infos[agent_i]["episode"]["r"])
                         else:
-                            num_episodes += 1
+                            if agent_i == 0:
+                                num_episodes += 1
                             reward_list.append(true_objective)
 
                 # if episode terminated synchronously for all agents, pause a bit before starting a new one
@@ -303,11 +313,12 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
                     for agent_i in range(env.num_agents):
                         avg_rew = np.mean(episode_rewards[agent_i], 0)
                         avg_true_obj = np.mean(true_objectives[agent_i], 0)
+                        std_rew = np.std(episode_rewards[agent_i], 0)
 
                         if not any(np.isnan(avg_rew)):
                             if avg_episode_rewards_str:
                                 avg_episode_rewards_str += ", "
-                            avg_episode_rewards_str += f"#{agent_i}: {avg_rew}"
+                            avg_episode_rewards_str += f"#{agent_i}: {avg_rew} ({std_rew})"
                         if not any(np.isnan(avg_true_obj)):
                             if avg_true_objective_str:
                                 avg_true_objective_str += ", "
@@ -345,12 +356,16 @@ def enjoy(cfg: Config) -> Tuple[StatusCode, float]:
         log.info(f"agent #{agent_i} acting frequency: {np.mean(acting_freqs)} episode lens: {np.mean(episode_lens)}")
         print(acting_freqs)
 
-    for agent_i in range(env.num_agents):
-        for episode_i in range(len(episode_rewards[agent_i])):
-            log.info(f"agent #{agent_i} episode #{episode_i}: {episode_rewards[agent_i][episode_i]}")
+    # for agent_i in range(env.num_agents):
+    #     for episode_i in range(len(episode_rewards[agent_i])):
+    #         log.info(f"agent #{agent_i} episode #{episode_i}: {episode_rewards[agent_i][episode_i]}")
 
-    episode_data_path = os.path.join(experiment_dir(cfg=cfg), "episode_data.joblib")
-    joblib.dump(episode_datas, episode_data_path)
+    if save_episode_data:
+        episode_data_path = os.path.join(experiment_dir(cfg=cfg), "episode_data.joblib")
+        joblib.dump(episode_datas, episode_data_path)
+
+    episode_rewards_path = os.path.join(experiment_dir(cfg=cfg), "episode_rewards.joblib")
+    joblib.dump(episode_rewards, episode_rewards_path)
 
     if cfg.save_video:
         if cfg.fps > 0:

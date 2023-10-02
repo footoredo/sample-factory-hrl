@@ -677,6 +677,7 @@ def add_eval_args(parser):
     parser.add_argument("--no_render", action="store_true", help="Do not render the environment during evaluation")
 
     parser.add_argument("--save_video", action="store_true", help="Save video instead of rendering during evaluation")
+    parser.add_argument("--save_episode_data", action="store_true", help="Save episode data during evaluation")
     parser.add_argument(
         "--video_frames",
         default=1e9,
