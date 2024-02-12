@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
+import numpy as np
+
 import torch
 from torch import Tensor, nn
 
 from sample_factory.algo.utils.action_distributions import is_continuous_action_space, sample_actions_log_probs
 from sample_factory.algo.utils.running_mean_std import RunningMeanStdInPlace, running_mean_std_summaries
 from sample_factory.algo.utils.tensor_dict import TensorDict
+from sample_factory.algo.utils.torch_utils import cal_dormant_ratio
 from sample_factory.cfg.configurable import Configurable
 from sample_factory.model.action_parameterization import (
     ActionParameterizationContinuousNonAdaptiveStddev,
@@ -16,6 +19,14 @@ from sample_factory.model.action_parameterization import (
 from sample_factory.model.model_utils import model_device
 from sample_factory.utils.normalize import ObservationNormalizer
 from sample_factory.utils.typing import ActionSpace, Config, ObsSpace
+
+
+class LinearOutputHook:
+    def __init__(self):
+        self.outputs = []
+
+    def __call__(self, module, module_in, module_out):
+        self.outputs.append(module_out)
 
 
 class ActorCritic(nn.Module, Configurable):
@@ -125,6 +136,9 @@ class ActorCritic(nn.Module, Configurable):
 
     def forward(self, normalized_obs_dict, rnn_states, values_only: bool = False) -> TensorDict:
         raise NotImplementedError()
+    
+    def calc_dormant_ratio(self, normalized_obs_dict, rnn_states, recycle=False) -> float:
+        raise NotImplementedError()
 
 
 class ActorCriticSharedWeights(ActorCritic):
@@ -181,6 +195,14 @@ class ActorCriticSharedWeights(ActorCritic):
         result = self.forward_tail(x, values_only, sample_actions=True)
         result["new_rnn_states"] = new_rnn_states
         return result
+    
+    def calc_dormant_ratio(self, normalized_obs_dict, rnn_states) -> float:
+        head_dormant_neurons, head_total_neurons, encoder_output = cal_dormant_ratio(self.encoder, normalized_obs_dict)
+        core_dormant_neurons, core_total_neurons, outputs = cal_dormant_ratio(self.core, encoder_output, rnn_states)
+        x, new_rnn_states = outputs
+        decoder_dormant_neurons, decoder_total_neurons, decoder_output = cal_dormant_ratio(self.decoder, x)
+        return head_dormant_neurons + core_dormant_neurons + decoder_dormant_neurons, \
+            head_total_neurons + core_total_neurons + decoder_total_neurons
 
 
 class ActorCriticSeparateWeights(ActorCritic):
@@ -210,6 +232,13 @@ class ActorCriticSeparateWeights(ActorCritic):
 
         self.critic_linear = nn.Linear(self.critic_decoder.get_out_size(), 1)
         self.action_parameterization = self.get_action_parameterization(self.critic_decoder.get_out_size())
+        
+        self.actor_linears = []
+        for module in (self.actor_encoder, self.actor_core, self.actor_decoder, self.action_parameterization):
+            for layer in module.modules():
+                if isinstance(layer, torch.nn.Linear):
+                    self.actor_linears.append(layer)
+                    print(layer)
 
         self.apply(self.initialize_weights)
 
@@ -275,6 +304,51 @@ class ActorCriticSeparateWeights(ActorCritic):
         result = self.forward_tail(x, values_only, sample_actions=True)
         result["new_rnn_states"] = new_rnn_states
         return result
+    
+    def calc_dormant_ratio(self, normalized_obs_dict, rnn_states, percentage=0.025, recycle=False) -> float:
+        assert not self.cfg.use_rnn
+        
+        hooks = []
+        hook_handlers = []
+        
+        for i_layer in range(len(self.actor_linears) - 1):
+            hook = LinearOutputHook()
+            hooks.append(hook)
+            hook_handlers.append(self.actor_linears[i_layer].register_forward_hook(hook))
+            
+        with torch.no_grad():
+            result = self.forward(normalized_obs_dict, rnn_states)
+            prev_logits = result["action_logits"]
+            
+        total_neurons = dormant_neurons = 0
+            
+        for i_layer in range(len(self.actor_linears) - 1):
+            layer = self.actor_linears[i_layer]
+            next_layer = self.actor_linears[i_layer + 1]
+            with torch.no_grad():
+                for output_data in hooks[i_layer].outputs:
+                    mean_output = output_data.abs().mean(0)
+                    avg_neuron_output = mean_output.mean()
+                    dormant_mask = mean_output < avg_neuron_output * percentage
+                    dormant_indices = dormant_mask.nonzero(as_tuple=True)[0]
+                    total_neurons += layer.weight.shape[0]
+                    dormant_neurons += len(dormant_indices)
+                    print(output_data.shape, avg_neuron_output, layer.weight.shape)
+                    
+                    if recycle:
+                        new_param = torch.empty(layer.weight.shape, device=layer.weight.device, dtype=layer.weight.dtype)
+                        in_features = layer.weight.shape[1]
+                        nn.init.uniform_(new_param, -np.sqrt(1 / in_features), np.sqrt(1 / in_features))
+                        layer.weight.data = torch.where(dormant_mask[:, None], new_param, layer.weight.data)
+                        layer.bias.data = torch.where(dormant_mask, 0., layer.bias.data)
+                        next_layer.weight.data = torch.where(dormant_mask[None, :], 0., next_layer.weight.data)
+                        
+        if recycle:
+            result = self.forward(normalized_obs_dict, rnn_states)
+            logits = result["action_logits"]
+            print("discrepency:", torch.norm(logits - prev_logits))
+                    
+        return dormant_neurons, total_neurons
 
 
 def default_make_actor_critic_func(cfg: Config, obs_space: ObsSpace, action_space: ActionSpace) -> ActorCritic:

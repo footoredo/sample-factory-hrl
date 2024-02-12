@@ -1,14 +1,14 @@
-def mujoco_override_defaults(env, parser):
+def robosuite_override_defaults(env, parser):
     parser.set_defaults(
         batched_sampling=False,
         num_workers=1,
         num_envs_per_worker=1,
         worker_num_splits=1,
-        train_for_env_steps=10000000,
+        train_for_env_steps=1000000,
         encoder_mlp_layers=[64, 64],
         env_frameskip=1,
         nonlinearity="relu",
-        batch_size=1024,
+        batch_size=256,
         kl_loss_coeff=0.1,
         use_rnn=False,
         adaptive_stddev=False,
@@ -35,11 +35,11 @@ def mujoco_override_defaults(env, parser):
         save_every_sec=15,
         serial_mode=False,
         async_rl=False,
-        actor_critic_share_weights=False,
+        stats_avg=10
     )
 
 
 # noinspection PyUnusedLocal
-def add_mujoco_env_args(env, parser):
+def add_robosuite_env_args(env, parser):
     # in case we need to add more args in the future
     pass

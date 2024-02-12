@@ -74,9 +74,9 @@ class MlpEncoder(Encoder):
         super().__init__(cfg)
 
         mlp_layers: List[int] = cfg.encoder_mlp_layers
-        self.mlp_head = create_mlp(mlp_layers, obs_space.shape[0], nonlinearity(cfg))
-        if len(mlp_layers) > 0:
-            self.mlp_head = torch.jit.script(self.mlp_head)
+        self.mlp_head = create_mlp(mlp_layers, obs_space.shape[0], nonlinearity(cfg, inplace=True))
+        # if len(mlp_layers) > 0:
+        #     self.mlp_head = torch.jit.script(self.mlp_head)
         self.encoder_out_size = calc_num_elements(self.mlp_head, obs_space.shape)
 
     def forward(self, obs: Tensor):

@@ -149,6 +149,7 @@ class Learner(Configurable):
 
         self.train_step: int = 0  # total number of SGD steps
         self.env_steps: int = 0  # total number of environment steps consumed by the learner
+        self.num_updates: int = 0  # total number of .train() called
 
         self.best_performance = -1e9
 
@@ -287,6 +288,7 @@ class Learner(Configurable):
         if load_progress:
             self.train_step = checkpoint_dict["train_step"]
             self.env_steps = checkpoint_dict["env_steps"]
+            self.num_updates = checkpoint_dict["num_updates"]
             self.best_performance = checkpoint_dict.get("best_performance", self.best_performance)
         self.actor_critic.load_state_dict(checkpoint_dict["model"])
         self.optimizer.load_state_dict(checkpoint_dict["optimizer"])
@@ -321,6 +323,7 @@ class Learner(Configurable):
         checkpoint = {
             "train_step": self.train_step,
             "env_steps": self.env_steps,
+            "num_updates": self.num_updates,
             "best_performance": self.best_performance,
             "model": self.actor_critic.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -718,6 +721,13 @@ class Learner(Configurable):
 
                     # enable syntactic sugar that allows us to access dict's keys as object attributes
                     mb = AttrDict(mb)
+                    
+                with torch.no_grad(), self.timing.add_time("dormant_calc"):
+                    # recycle = self.num_updates % 10 == 0 and epoch == 0
+                    recycle = False
+                    dormant_neurons, total_neurons = self.actor_critic.calc_dormant_ratio(mb.normalized_obs, None, recycle=recycle)
+                    print("dormatn:", dormant_neurons, total_neurons)
+                    dormant_ratio = dormant_neurons / total_neurons
 
                 with timing.add_time("calculate_losses"):
                     (
@@ -845,6 +855,8 @@ class Learner(Configurable):
 
         stats.lr = self.curr_lr
         stats.actual_lr = train_loop_vars.actual_lr  # potentially scaled because of masked data
+        
+        stats.dormant_ratio = train_loop_vars.dormant_ratio
 
         stats.update(self.actor_critic.summaries())
 
@@ -1030,6 +1042,7 @@ class Learner(Configurable):
             return buff, dataset_size, num_invalids
 
     def train(self, batch: TensorDict) -> Optional[Dict]:
+        self.num_updates += 1
         with self.timing.add_time("misc"):
             self._maybe_update_cfg()
             self._maybe_load_policy()

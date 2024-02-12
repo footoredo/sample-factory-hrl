@@ -3,6 +3,7 @@ from typing import Optional
 import gymnasium as gym
 
 from sample_factory.utils.utils import is_module_available
+import sf_examples.mujoco.replan_env
 
 
 def mujoco_available():
@@ -27,6 +28,7 @@ MUJOCO_ENVS = [
     MujocoSpec("mujoco_walker", "Walker2d-v4"),
     MujocoSpec("mujoco_pusher", "Pusher-v4"),
     MujocoSpec("mujoco_swimmer", "Swimmer-v4"),
+    MujocoSpec("mujoco_pickplace", "Pickplace-v0"),
 ]
 
 
