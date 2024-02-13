@@ -722,12 +722,12 @@ class Learner(Configurable):
                     # enable syntactic sugar that allows us to access dict's keys as object attributes
                     mb = AttrDict(mb)
                     
-                with torch.no_grad(), self.timing.add_time("dormant_calc"):
-                    # recycle = self.num_updates % 10 == 0 and epoch == 0
-                    recycle = False
-                    dormant_neurons, total_neurons = self.actor_critic.calc_dormant_ratio(mb.normalized_obs, None, recycle=recycle)
-                    print("dormatn:", dormant_neurons, total_neurons)
-                    dormant_ratio = dormant_neurons / total_neurons
+                # with torch.no_grad(), self.timing.add_time("dormant_calc"):
+                #     # recycle = self.num_updates % 10 == 0 and epoch == 0
+                #     recycle = False
+                #     dormant_neurons, total_neurons = self.actor_critic.calc_dormant_ratio(mb.normalized_obs, None, recycle=recycle)
+                #     print("dormatn:", dormant_neurons, total_neurons)
+                #     dormant_ratio = dormant_neurons / total_neurons
 
                 with timing.add_time("calculate_losses"):
                     (
@@ -856,7 +856,7 @@ class Learner(Configurable):
         stats.lr = self.curr_lr
         stats.actual_lr = train_loop_vars.actual_lr  # potentially scaled because of masked data
         
-        stats.dormant_ratio = train_loop_vars.dormant_ratio
+        # stats.dormant_ratio = train_loop_vars.dormant_ratio
 
         stats.update(self.actor_critic.summaries())
 

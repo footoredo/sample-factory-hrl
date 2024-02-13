@@ -196,7 +196,7 @@ class ActorCriticSharedWeights(ActorCritic):
         result["new_rnn_states"] = new_rnn_states
         return result
     
-    def calc_dormant_ratio(self, normalized_obs_dict, rnn_states) -> float:
+    def calc_dormant_ratio(self, normalized_obs_dict, rnn_states, recycle=False) -> float:
         head_dormant_neurons, head_total_neurons, encoder_output = cal_dormant_ratio(self.encoder, normalized_obs_dict)
         core_dormant_neurons, core_total_neurons, outputs = cal_dormant_ratio(self.core, encoder_output, rnn_states)
         x, new_rnn_states = outputs

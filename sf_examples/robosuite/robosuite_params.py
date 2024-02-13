@@ -7,7 +7,7 @@ def robosuite_override_defaults(env, parser):
         train_for_env_steps=1000000,
         encoder_mlp_layers=[64, 64],
         env_frameskip=1,
-        nonlinearity="relu",
+        nonlinearity="tanh",
         batch_size=256,
         kl_loss_coeff=0.1,
         use_rnn=False,

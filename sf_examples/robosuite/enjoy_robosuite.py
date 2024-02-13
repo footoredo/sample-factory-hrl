@@ -6,7 +6,7 @@ from sf_examples.robosuite.train_robosuite import parse_robosuite_args, register
 
 def main():
     """Script entry point."""
-    register_robosuite_components()
+    register_robosuite_components(evaluation=True)
     cfg = parse_robosuite_args(evaluation=True)
     status = enjoy(cfg)
     return status

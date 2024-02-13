@@ -1,5 +1,8 @@
 import sys
 from typing import Any, Dict, Optional
+from collections import deque
+
+import joblib
 
 import gymnasium as gym
 import numpy as np
@@ -17,7 +20,7 @@ from sf_examples.robosuite.robosuite_params import add_robosuite_env_args, robos
 
 
 class RobosuiteGymEnv(gym.Env):
-    def __init__(self, env_name, controller="OSC_POSE"):
+    def __init__(self, env_name, controller="OSC_POSE", tamp_ratio=10, eval=True):
         options = {}
         options["env_name"] = env_name
         if "TwoArm" in options["env_name"]:
@@ -65,6 +68,17 @@ class RobosuiteGymEnv(gym.Env):
         
         self._env = env
         self._succ_counter = 0
+        self._num_resets = 0
+        self._tamp_ratio = tamp_ratio
+        self._state_maxlen = 1000
+        self._state_queue = deque(maxlen=self._state_maxlen)
+        self._eval = eval
+        # self._state_queue = list()
+        
+        if not self._eval:
+            init_states = joblib.load("/home/footoredo/playground/sample-factory/Stack_init_states_100.joblib")
+            for init_state in init_states:
+                self._state_queue.append(init_state)
         
     @property
     def observation_space(self):
@@ -78,9 +92,31 @@ class RobosuiteGymEnv(gym.Env):
     def action_space(self):
         low, high = self._env.action_spec
         return gym.spaces.Box(low[:7], high[:7])
+    
+    def _populate_states(self, max_new=None):
+        self._env.set_use_tamp(True)
+        num_new = 0
+        while len(self._state_queue) < self._state_maxlen:
+            self._env.reset()
+            self._state_queue.append(self._env.get_state())
+            num_new += 1
+            if num_new >= max_new:
+                break
+        self._env.set_use_tamp(False)
 
     def reset(self, **kwargs):
-        obs = self._env.reset()
+        self._num_resets += 1
+        if not self._eval:
+            if self._num_resets % self._tamp_ratio == 0: # and len(self._state_queue) > 0:
+                # self._state_queue.popleft()
+                print("num_resets", self._num_resets)
+                # self._populate_states(max_new=1)
+            init_state_ind = self.np_random.integers(len(self._state_queue))
+            print(init_state_ind, self._state_queue[init_state_ind].keys())
+            self._env.set_use_tamp(False)
+            obs = self._env.reset(init_state=self._state_queue[init_state_ind])
+        else:
+            obs = self._env.reset()
         self._succ_counter = 0
         return obs, {}
 
@@ -89,21 +125,30 @@ class RobosuiteGymEnv(gym.Env):
         
         terminated = truncated = False
         
+        if reward > 0.5:
+            reward *= np.power(2.0, self._succ_counter)
+            self._succ_counter += 1
+            if self._succ_counter == 5:
+                terminated = True
+                # reward += 10
+        else:
+            if self._succ_counter > 0:
+                terminated = True
+                # reward -= 0.5
+        
         # if reward > 0.5:
+        #     # terminated = True
         #     self._succ_counter += 1
-        #     if self._succ_counter == 5:
-        #         terminated = True
-        #         reward += 10
-        # else:
-        #     if self._succ_counter > 0:
-        #         terminated = True
-        #         # reward -= 0.5
+            
+        # if self._succ_counter >= (1 if self._eval else 1):
+        #     terminated = True
         
         if done:
-            if self._env.timestep < self._env.horizon:
-                terminated = True
-            else:
-                truncated = True
+            terminated = True
+            # if self._env.timestep < self._env.horizon:
+            #     terminated = True
+            # else:
+            #     truncated = True
 
         return obs, reward, terminated, truncated, dict()
 
@@ -113,9 +158,15 @@ class RobosuiteGymEnv(gym.Env):
 def make_robosuite_env(env_name, cfg=None, _env_config=None, render_mode: Optional[str] = None):
     return RobosuiteGymEnv(env_name)
 
+def make_robosuite_env_eval(env_name, cfg=None, _env_config=None, render_mode: Optional[str] = None):
+    return RobosuiteGymEnv(env_name, eval=True)
 
-def register_robosuite_components():
-    register_env("Stack", make_robosuite_env)
+
+def register_robosuite_components(evaluation=False):
+    if evaluation:
+        register_env("Stack", make_robosuite_env_eval)
+    else:
+        register_env("Stack", make_robosuite_env)
     
     
 def parse_robosuite_args(argv=None, evaluation=False):
